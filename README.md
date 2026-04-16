@@ -1,192 +1,135 @@
-# molecule-sdk-python
+# molecule_plugin — Python SDK for building Molecule AI plugins
 
-<p>
-  <a href="https://pypi.org/project/molecule-sdk-python/"><img src="https://img.shields.io/pypi/v/molecule-sdk-python?style=flat-square" alt="PyPI" /></a>
-  <a href="https://pypi.org/project/molecule-sdk-python/"><img src="https://img.shields.io/pypi/pyversions/molecule-sdk-python?style=flat-square" alt="Python 3.11+" /></a>
-  <a href="https://github.com/Molecule-AI/molecule-sdk-python/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/molecule-sdk-python?style=flat-square" alt="License: MIT" /></a>
-</p>
+A Molecule AI plugin is a directory that bundles rules, skills, and per-runtime
+install adaptors. Any plugin that conforms to this contract is installable
+on any Molecule AI workspace whose runtime the plugin supports.
 
-Python SDK for the Molecule AI platform. Interact with workspaces, delegate tasks,
-discover peers, send A2A messages, and query the platform registry — from any
-Python 3.11+ application.
+## Quick start
 
-## Features
+Copy `template/` to a new directory and edit:
 
-- **Async-first** — all I/O is `async def` using `httpx`
-- **Sync wrapper** — `MoleculeClient` for non-async callers via `anyio`
-- **Typed models** — Pydantic v2 request/response models for every API resource
-- **Platform API** — workspace delegation, peer registry, A2A messaging, task polling
-- **Auto-auth** — `MOL_API_KEY` injected automatically on every request
-
-## Quick Start
-
-```bash
-pip install molecule-sdk-python
+```
+my-plugin/
+├── plugin.yaml              # name, version, runtimes, description
+├── rules/my-rule.md         # optional — appended to CLAUDE.md at install
+├── skills/my-skill/
+│   ├── SKILL.md             # instructions injected into the system prompt
+│   └── tools/do_thing.py    # optional LangChain @tool functions
+└── adapters/
+    ├── claude_code.py       # one-liner: `from molecule_plugin import AgentskillsAdaptor as Adaptor`
+    └── deepagents.py        # same
 ```
 
+Validate:
+
 ```python
-import os
-from molecule_sdk import AsyncMoleculeClient
+from molecule_plugin import validate_manifest
+errors = validate_manifest("my-plugin/plugin.yaml")
+assert not errors, errors
+```
 
-os.environ["MOL_API_KEY"] = "your-api-key"
-os.environ["MOL_PLATFORM_URL"] = "https://api.moleculesai.app"  # optional
+## CLI
 
-client = AsyncMoleculeClient()
+The SDK ships a CLI for validating Molecule AI artifacts before publishing:
 
-# List peer workspaces
-peers = await client.workspace.list_peers()
-for peer in peers:
-    print(peer.name, peer.status)
+```bash
+python -m molecule_plugin validate plugin    my-plugin/
+python -m molecule_plugin validate workspace workspace-configs-templates/claude-code-default/
+python -m molecule_plugin validate org       org-templates/molecule-dev/
+python -m molecule_plugin validate channel   channels.yaml
+python -m molecule_plugin validate my-plugin/   # kind defaults to 'plugin'
+```
 
-# Delegate a task
-result = await client.workspace.delegate(
-    workspace_id="ws-abc123",
-    task="Summarise the last 10 commits in repo owner/name",
+Exit code is 0 when valid, 1 when any errors are found — suitable for CI.
+Add `-q` / `--quiet` to suppress success lines and emit only errors.
+
+Programmatic equivalents:
+
+```python
+from molecule_plugin import (
+    validate_plugin,
+    validate_workspace_template,
+    validate_org_template,
+    validate_channel_file,
+    validate_channel_config,
 )
-print(result)
-
-await client.close()
 ```
 
-### Sync usage
+## Per-runtime adaptors — when to write a custom one
+
+The default `AgentskillsAdaptor` handles the common shape: rules go into
+the runtime's memory file (CLAUDE.md), skill dirs go into `/configs/skills/`.
+That covers most plugins.
+
+Write a custom adaptor when you need to:
+
+- **Register runtime tools dynamically** — call `ctx.register_tool(name, fn)`.
+- **Register DeepAgents sub-agents** — call `ctx.register_subagent(name, spec)`.
+- **Write to a non-standard memory file** — call `ctx.append_to_memory(filename, content)`.
+
+Minimum custom adaptor:
 
 ```python
-from molecule_sdk import MoleculeClient
+# adapters/deepagents.py
+from molecule_plugin import InstallContext, InstallResult
 
-client = MoleculeClient()
-peers = client.workspace.list_peers()
-print(peers)
-client.close()  # optional; closes the background event loop
+class Adaptor:
+    def __init__(self, plugin_name: str, runtime: str):
+        self.plugin_name, self.runtime = plugin_name, runtime
+
+    async def install(self, ctx: InstallContext) -> InstallResult:
+        ctx.register_subagent("my-agent", {"prompt": "...", "tools": [...]})
+        return InstallResult(plugin_name=self.plugin_name, runtime=self.runtime, source="plugin")
+
+    async def uninstall(self, ctx: InstallContext) -> None:
+        pass
 ```
 
-## Environment Variables
+## Resolution order (understood by the platform)
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `MOL_PLATFORM_URL` | No | `http://platform:8080` | Platform API base URL |
-| `MOL_API_KEY` | Yes | — | API key for authentication |
-| `MOL_WORKSPACE_ID` | For delegation | — | ID of the calling workspace |
+For `(plugin_name, runtime)`:
 
-Set `MOL_API_KEY` before instantiating a client. `MoleculeConfigError` is raised
-at the first request if it is missing.
+1. **Platform registry** — `workspace-template/plugins_registry/<plugin>/<runtime>.py`
+   (curated; set by the Molecule AI team for quality-assured plugins).
+2. **Plugin-shipped** — `<plugin_root>/adapters/<runtime>.py` (what this SDK helps you build).
+3. **Raw-drop fallback** — copies plugin files into `/configs/plugins/<name>/`
+   and surfaces a warning; no tools are wired.
 
-## API Reference
+You generally ship for path #2. If your plugin becomes popular enough to be
+promoted to "default," the Molecule AI team PRs a copy of your adaptor into
+the platform registry (path #1) so it survives upstream breakage.
 
-### Workspace API
+## Testing locally
+
+The SDK ships `AgentskillsAdaptor` as a standalone, unit-testable class:
 
 ```python
-from molecule_sdk.workspace import list_peers, discover_peer, delegate, send_message, task_status
+import asyncio
+from pathlib import Path
+from molecule_plugin import AgentskillsAdaptor, InstallContext
 
-# List all active peer workspaces
-peers: list[PeerInfo] = await list_peers()
-
-# Resolve a workspace ID to endpoint info
-peer: PeerInfo = await discover_peer("ws-abc123")
-
-# Delegate synchronously (blocks until result)
-response: DelegationResponse = await delegate("ws-abc123", "do the thing")
-
-# Delegate asynchronously (immediate AsyncTaskRef; poll manually)
-ref: AsyncTaskRef = await delegate("ws-abc123", "do the thing", async_mode=True)
-print(ref.task_id)
-status: AsyncTaskRef = await task_status(ref.task_id)
-
-# Send a one-way A2A message
-from molecule_sdk.models import A2AMessage
-ack = await send_message(
-    "ws-abc123",
-    A2AMessage(sender="ws-me", recipient="ws-abc123", message_type="tool_result", payload={"tool": "fetch", "url": "..."}),
+ctx = InstallContext(
+    configs_dir=Path("/tmp/configs"),
+    workspace_id="local",
+    runtime="claude_code",
+    plugin_root=Path("./my-plugin"),
 )
-print(ack.message_id, ack.sent_at)
+asyncio.run(AgentskillsAdaptor("my-plugin", "claude_code").install(ctx))
+# check /tmp/configs/CLAUDE.md, /tmp/configs/skills/
 ```
 
-### Models
+## Publishing
 
-All models are Pydantic v2 `BaseModel` subclasses:
+A plugin is just a directory. Push it to any Git host. Installation via
+`POST /plugins/install {git_url}` is on the roadmap — see the platform's
+`PLAN.md` under "Install-from-GitHub-URL flow." Until then, plugins are
+bundled into the platform by dropping them into `plugins/` at deploy time.
 
-| Model | Description |
-|---|---|
-| `PeerInfo` | Peer workspace — ID, name, endpoint, status |
-| `WorkspaceInfo` | Local workspace summary |
-| `DelegationRequest` | Payload for task delegation |
-| `DelegationResponse` | Delegation result (sync mode) |
-| `AsyncTaskRef` | Async task reference for polling |
-| `TaskStatus` | Enum: `PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED` |
-| `A2AMessage` | A2A message envelope |
+## Supported runtimes
 
-## Error Handling
-
-```python
-from molecule_sdk.errors import MoleculeError, MoleculeAPIError, MoleculeTimeoutError
-
-try:
-    result = await delegate("ws-nonexistent", "task")
-except MoleculeAPIError as e:
-    print(e.status_code)  # e.g. 404
-    print(e.response)      # parsed JSON error body
-except MoleculeTimeoutError:
-    print("Platform did not respond within timeout")
-```
-
-## Installation
-
-### From PyPI
+As of 2026-Q2: `claude_code`, `deepagents`, `langgraph`, `crewai`, `autogen`,
+`openclaw`. See the live list with:
 
 ```bash
-pip install molecule-sdk-python
+curl $PLATFORM_URL/plugins
 ```
-
-### From source
-
-```bash
-git clone https://github.com/Molecule-AI/molecule-sdk-python
-cd molecule-sdk-python
-pip install -e ".[dev]"
-```
-
-## Development
-
-```bash
-# Install with dev dependencies
-pip install -e ".[dev]"
-
-# Lint
-ruff check src/molecule_sdk/
-
-# Type check
-mypy src/molecule_sdk/
-
-# Run unit tests (mocked HTTP — no platform required)
-pytest tests/unit/ -v
-
-# Run integration tests (requires a running platform)
-export MOL_API_KEY=your-key
-export MOL_PLATFORM_URL=http://localhost:8080
-pytest tests/integration/ -v
-
-# Run all tests
-pytest tests/ -v
-
-# Build package
-python -m build
-```
-
-## Release Process
-
-1. Bump `__version__` in `src/molecule_sdk/_version.py`
-2. Update `CHANGELOG.md`
-3. Tag: `git tag vX.Y.Z && git push --tags`
-4. GitHub Actions publishes to PyPI automatically on tag push
-
-## Known Issues
-
-See [`known-issues.md`](./known-issues.md) for open issues including:
-
-- **KI-005** — `httpx` pinned `<1.0` as precaution pending a2a-sdk migration
-- **sdk-42** — Snapshot headers not forwarded in test fixtures
-- **sdk-71** — No token refresh for rotated API keys
-- **sdk-103** — Large delegation payloads may hit platform NGINX limits
-
-## License
-
-MIT © Molecule AI
