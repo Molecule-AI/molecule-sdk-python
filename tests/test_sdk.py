@@ -32,6 +32,7 @@ def test_generic_adaptor_satisfies_protocol():
     assert isinstance(adaptor, PluginAdaptor)
 
 
+@pytest.mark.asyncio
 async def test_generic_adaptor_installs_skills_and_rules(tmp_path: Path):
     plugin_root = tmp_path / "demo"
     (plugin_root / "rules").mkdir(parents=True)
@@ -120,6 +121,7 @@ def test_validate_manifest_runtime_entry_must_be_string(tmp_path: Path):
     assert any("string" in e for e in errors)
 
 
+@pytest.mark.asyncio
 async def test_generic_adaptor_installs_rules_and_skills_both(tmp_path: Path):
     """Full shape: rules + root fragment + skills + skip-list files + empty rule file."""
     plugin_root = tmp_path / "demo"
@@ -161,6 +163,7 @@ async def test_generic_adaptor_installs_rules_and_skills_both(tmp_path: Path):
     assert "# Plugin: demo /" not in (configs / "CLAUDE.md").read_text()
 
 
+@pytest.mark.asyncio
 async def test_generic_adaptor_skips_existing_skill_dir(tmp_path: Path):
     """Idempotency: a skill dir already at /configs/skills/<name>/ isn't clobbered."""
     plugin_root = tmp_path / "demo"
@@ -180,6 +183,7 @@ async def test_generic_adaptor_skips_existing_skill_dir(tmp_path: Path):
     assert (configs / "skills" / "s1" / "SKILL.md").read_text() == "# user wrote this"
 
 
+@pytest.mark.asyncio
 async def test_generic_adaptor_uninstall_when_nothing_installed(tmp_path: Path):
     configs = tmp_path / "configs"
     configs.mkdir()
