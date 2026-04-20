@@ -753,3 +753,194 @@ def test_safe_extract_skips_symlinks_silently(tmp_path: Path):
         _safe_extract_tar(tf, tmp_path)
     assert (tmp_path / "real.md").exists()
     assert not (tmp_path / "link.lnk").exists()
+
+
+# ---------------------------------------------------------------------------
+# verify_plugin_sha256 + content integrity
+# ---------------------------------------------------------------------------
+
+from molecule_agent.client import _sha256_file, _walk_files, verify_plugin_sha256
+
+
+def test_sha256_file_computes_correct_hash(tmp_path: Path):
+    f = tmp_path / "data.txt"
+    f.write_bytes(b"hello world")
+    h = _sha256_file(f)
+    # SHA256("hello world") in lowercase hex
+    assert h == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+
+
+def test_walk_files_excludes_directories(tmp_path: Path):
+    (tmp_path / "a.txt").write_bytes(b"a")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.txt").write_bytes(b"b")
+    (tmp_path / "sub" / "deep").mkdir()
+    (tmp_path / "sub" / "deep" / "c.txt").write_bytes(b"c")
+    rels = sorted(_walk_files(tmp_path))
+    assert rels == ["a.txt", "sub/b.txt", "sub/deep/c.txt"]
+
+
+def test_verify_plugin_sha256_returns_true_on_match(tmp_path: Path):
+    # plugin.yaml is excluded from the manifest (self-referential field),
+    # so only non-plugin.yaml files contribute to the manifest hash.
+    (tmp_path / "plugin.yaml").write_text("name: test\nversion: '1.0'\n")
+    (tmp_path / "rules.md").write_text("# Rules\n")
+    # Manually compute: plugin.yaml excluded, only rules.md counts
+    import hashlib, json
+    file_hashes = [
+        ("rules.md", _sha256_file(tmp_path / "rules.md")),
+    ]
+    manifest_bytes = json.dumps(sorted(file_hashes), sort_keys=True).encode()
+    expected = hashlib.sha256(manifest_bytes).hexdigest()
+    assert verify_plugin_sha256(tmp_path, expected) is True
+
+
+def test_verify_plugin_sha256_returns_false_on_mismatch(tmp_path: Path):
+    (tmp_path / "f.txt").write_bytes(b"content")
+    assert verify_plugin_sha256(tmp_path, "0" * 64) is False
+
+
+def test_verify_plugin_sha256_rejects_invalid_format():
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="64-character lowercase hex"):
+        verify_plugin_sha256(Path("/tmp"), "short")
+    with _pytest.raises(ValueError, match="64-character lowercase hex"):
+        verify_plugin_sha256(Path("/tmp"), "g" * 64)  # 'g' is not hex
+    with _pytest.raises(ValueError, match="64-character lowercase hex"):
+        verify_plugin_sha256(Path("/tmp"), 123)  # type error
+
+
+def test_install_plugin_sha256_verified_setup_sh_run(
+    client: RemoteAgentClient, tmp_path: Path
+):
+    """When sha256 matches, setup.sh runs normally."""
+    client.save_token("t")
+
+    import hashlib, json
+
+    setup_sh = b"#!/bin/bash\ntouch setup-ran\n"
+
+    # plugin.yaml is excluded from its own manifest hash (breaks circular dep),
+    # so convergence is instant: compute the manifest over other files only,
+    # then write sha256=<that hash> into plugin.yaml.
+    yaml_no_sha = b"name: withsha\nversion: '1.0'\n"
+    file_hashes = [
+        ("setup.sh", hashlib.sha256(setup_sh).hexdigest()),
+        # plugin.yaml excluded from manifest (see verify_plugin_sha256 docstring)
+    ]
+    manifest_hash = hashlib.sha256(
+        json.dumps(sorted(file_hashes), sort_keys=True).encode()
+    ).hexdigest()
+
+    plugin_yaml_bytes = (
+        f"name: withsha\nversion: '1.0'\n"
+        f"sha256: {manifest_hash}\n"
+    ).encode()
+
+    tarball = _make_tarball({
+        "plugin.yaml": plugin_yaml_bytes,
+        "setup.sh":    setup_sh,
+    })
+
+    def fake_get(url, headers=None, params=None, stream=False, timeout=None):
+        return _StreamingResp(200, tarball)
+    client._session.get.side_effect = fake_get
+    client._session.post.return_value = FakeResponse(200, {})
+
+    target = client.install_plugin("withsha")
+    assert (target / "setup-ran").exists(), "setup.sh should have run"
+
+
+def test_install_plugin_sha256_mismatch_aborts_setup_sh(
+    client: RemoteAgentClient, tmp_path: Path
+):
+    """When sha256 does not match, install_plugin raises and setup.sh is NOT run."""
+    client.save_token("t")
+
+    # Plugin.yaml declares sha256 but the actual content differs
+    mismatched_yaml = (
+        "name: bad\nversion: '1.0'\n"
+        "sha256: " + "f" * 64 + "\n"
+    )
+    tarball = _make_tarball({
+        "plugin.yaml": mismatched_yaml.encode(),
+        "setup.sh":    b"#!/bin/bash\ntouch must-not-run\n",
+    })
+
+    def fake_get(url, headers=None, params=None, stream=False, timeout=None):
+        return _StreamingResp(200, tarball)
+    client._session.get.side_effect = fake_get
+    client._session.post.return_value = FakeResponse(200, {})
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="sha256 mismatch"):
+        client.install_plugin("bad")
+    # Plugin dir must not exist after failure
+    assert not (client.plugins_dir / "bad").exists()
+
+
+def test_install_plugin_missing_sha256_skips_verification(
+    client: RemoteAgentClient, tmp_path: Path
+):
+    """When plugin.yaml has no sha256 field, verification is skipped (backward compat)."""
+    client.save_token("t")
+    tarball = _make_tarball({
+        "plugin.yaml": b"name: nosha\nversion: '1.0'\n",
+        "setup.sh":    b"#!/bin/bash\ntouch setup-ran\n",
+    })
+    def fake_get(url, headers=None, params=None, stream=False, timeout=None):
+        return _StreamingResp(200, tarball)
+    client._session.get.side_effect = fake_get
+    client._session.post.return_value = FakeResponse(200, {})
+
+    target = client.install_plugin("nosha")
+    assert (target / "setup-ran").exists()
+
+
+# ---------------------------------------------------------------------------
+# validate_manifest — sha256 field
+# ---------------------------------------------------------------------------
+
+from molecule_plugin import validate_manifest
+
+
+def test_validate_manifest_rejects_invalid_sha256(tmp_path: Path):
+    (tmp_path / "plugin.yaml").write_text("name: test\nsha256: too-short\n")
+    errors = validate_manifest(tmp_path / "plugin.yaml")
+    assert any("64" in e for e in errors)
+
+
+def test_validate_manifest_rejects_non_hex_sha256(tmp_path: Path):
+    (tmp_path / "plugin.yaml").write_text("name: test\nsha256: " + "g" * 64 + "\n")
+    errors = validate_manifest(tmp_path / "plugin.yaml")
+    assert any("hex" in e for e in errors)
+
+
+def test_validate_manifest_accepts_valid_sha256(tmp_path: Path):
+    valid_sha = "a" * 64
+    (tmp_path / "plugin.yaml").write_text(f"name: test\nsha256: {valid_sha}\n")
+    errors = validate_manifest(tmp_path / "plugin.yaml")
+    assert not errors
+
+
+def test_validate_manifest_accepts_absent_sha256(tmp_path: Path):
+    (tmp_path / "plugin.yaml").write_text("name: test\nversion: '1.0'\n")
+    errors = validate_manifest(tmp_path / "plugin.yaml")
+    assert not errors
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        sym = tarfile.TarInfo(name="link.lnk")
+        sym.type = tarfile.SYMTYPE
+        sym.linkname = "/etc/passwd"
+        tf.addfile(sym)
+        # Plus a normal file alongside
+        info = tarfile.TarInfo(name="real.md")
+        data = b"ok"
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        _safe_extract_tar(tf, tmp_path)
+    assert (tmp_path / "real.md").exists()
+    assert not (tmp_path / "link.lnk").exists()
