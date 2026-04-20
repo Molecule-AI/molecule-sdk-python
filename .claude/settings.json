@@ -1,27 +1,33 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "pip install -e .",
-      "pip install .",
-      "python -m pytest tests/",
-      "python -m ruff check src/",
-      "python -m mypy src/",
-      "python -m build",
-      "gh api *"
+      "Bash(git *)",
+      "Bash(pip *)",
+      "Bash(python *)",
+      "Bash(pytest *)",
+      "Bash(python -m *)",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Bash(git push --force *)"
     ]
   },
   "hooks": {
-    "AfterWrite": [
+    "PreToolUse": [
       {
-        "match": "src/**/*.py",
-        "prompt": "Run `ruff check --fix` on the file you just modified and commit the fix if it is a genuine correction (not a comment removal)."
-      }
-    ],
-    "AfterUnitTest": [
-      {
-        "match": "tests/**/*.py",
-        "prompt": "If tests failed, run `pytest --tb=short` on the same file and report the first failure reason concisely."
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Bash executed'",
+            "once": true
+          }
+        ]
       }
     ]
-  }
+  },
+  "cleanupPeriodDays": 30
 }
