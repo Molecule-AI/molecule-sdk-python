@@ -1,6 +1,6 @@
 """Pytest fixtures and helpers for molecule_agent tests.
 
-All fixtures are pytest-scoped unless noted.  No live platform required —
+All fixtures are function-scoped unless noted.  No live platform required —
 all HTTP is mocked via ``unittest.mock``.
 """
 from __future__ import annotations
@@ -28,10 +28,12 @@ class FakeResponse:
         status_code: int = 200,
         json_body: Any = None,
         text: str = "",
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status_code = status_code
         self._json = json_body
         self.text = text
+        self.headers = headers or {}
 
     def json(self) -> Any:
         return self._json
@@ -104,7 +106,7 @@ class _CaptureHandler:
 
     @classmethod
     def handle(cls, method: str, url: str, **kwargs: Any) -> FakeResponse:
-        for m, p, status, headers, body in reversed(cls._stubs):
+        for m, p, status, hdrs, body in reversed(cls._stubs):
             if m == method and p in url:
-                return FakeResponse(status, json_body={}, text=body)
+                return FakeResponse(status, json_body={}, text=body, headers=hdrs)
         raise RuntimeError(f"no stub for {method} {url}")
