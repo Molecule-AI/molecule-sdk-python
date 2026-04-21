@@ -1,210 +1,283 @@
-# CLAUDE.md — molecule-sdk-python
+# molecule-mcp-server
 
-## Project overview
+TypeScript MCP server that exposes the Molecule AI agent platform as tools via the Model Context Protocol (MCP).
 
-Python SDK for the Molecule AI agent platform. Exposes two user-facing packages:
+## Project Overview
 
-- **`molecule_agent`** — Phase 30.8 remote-agent client. Write an agent that runs
-  outside the platform's Docker network; it registers with the platform, pulls
-  secrets, sends heartbeats, and detects pause/delete. Wraps the Phase 30.1–30.7
-  HTTP contract (register, secrets, heartbeat, state-poll, A2A peer discovery,
-  delegation, plugin install).
+This server acts as a bridge between MCP clients (e.g., Claude Desktop, other MCP-compatible hosts) and the Molecule AI platform. It registers platform capabilities as MCP tools so agents can interact with the platform natively.
 
-- **`molecule_plugin`** — Plugin-authoring SDK. Build installable plugin directories
-  that ship rules, skills (agentskills.io format), and per-runtime adaptors to any
-  Molecule AI workspace. Ships validators for plugin.yaml, SKILL.md (agentskills.io
-  spec), workspace/org/channel templates, and a `python -m molecule_plugin` CLI.
-
-Both packages are published together as `molecule-ai-sdk` on PyPI (`setuptools`,
-`pyproject.toml`, `requires-python = ">=3.11"`).
-
----
-
-## Build and test
+## Build and Test
 
 ```bash
-# Install in dev mode
-pip install -e .
+# Install dependencies
+npm install
 
-# Run the full suite
-pytest
+# Build (TypeScript -> JS, output to dist/)
+npm run build
 
-# Run only molecule_agent tests (remote-agent client)
-pytest tests/test_remote_agent.py
+# Run tests (Jest, config in jest.config.cjs)
+npm test
 
-# Run only molecule_plugin tests (SDK + validators)
-pytest tests/test_sdk.py tests/test_validators.py
-
-# CLI smoke
-python -m molecule_plugin validate --help
-python -m molecule_plugin validate plugin /path/to/my-plugin/
-python -m molecule_plugin validate workspace /path/to/workspace-template/
+# Type check without building
+npm run lint    # if present
 ```
 
-Tests use standard `pytest` fixtures with in-memory mocks — no live platform
-required. The `molecule_agent` tests mock `requests.Session` directly via
-`unittest.mock.MagicMock`.
-
----
-
-## Package conventions
-
-```
-molecule_agent/          # Remote-agent client (blocking requests, Phase 30)
-  client.py              # RemoteAgentClient, WorkspaceState, PeerInfo,
-                        # make_idempotency_key, _safe_extract_tar
-
-molecule_plugin/         # Plugin-authoring SDK
-  protocol.py            # PluginAdaptor (runtime_checkable Protocol),
-                        # InstallContext, InstallResult
-  builtins.py            # AgentskillsAdaptor (default),
-                        # SKIP_ROOT_MD, _install_claude_layer
-  manifest.py            # PLUGIN_YAML_SCHEMA, validate_manifest,
-                        # parse_skill_md, validate_skill, validate_plugin
-  workspace.py           # validate_workspace_template, SUPPORTED_RUNTIMES
-  org.py                 # validate_org_template
-  channel.py             # validate_channel_config, validate_channel_file,
-                        # SUPPORTED_CHANNEL_TYPES
-  __main__.py            # CLI: python -m molecule_plugin validate [plugin|workspace|org|channel]
-
-template/               # Reference plugin layout (NOT pip-installable)
-  adapters/
-    claude_code.py       # AgentskillsAdaptor — one-liner per runtime
-    deepagents.py        # AgentskillsAdaptor — one-liner per runtime
-
-examples/remote-agent/   # Runnable Phase 30.1–30.5 demo
-  run.py
-```
-
-### Adding a new tool or endpoint to molecule_agent
-
-1. Pick the Phase 30 sub-phase that matches the contract (e.g. 30.6 = peer
-   discovery).
-2. Add the method to `RemoteAgentClient` in `client.py`. Follow the existing
-   pattern: `_auth_headers()` for bearer token, `raise_for_status()` on the
-   response, `logger.warning()` instead of re-raising for transient errors in
-   loops.
-3. Add a corresponding test fixture + test cases in `tests/test_remote_agent.py`.
-   Mock `client._session.get/.post` with `FakeResponse` or a `side_effect`.
-4. Export from `__init__.py` and add to `__all__`.
-
-### Adding a new validator to molecule_plugin
-
-1. Add the validation function to the appropriate module (`manifest.py` for
-   SKILL.md, `workspace.py` for workspace templates, etc.).
-2. Return a list of error strings (manifest layer) or a list of
-   `ValidationError` objects (workspace/org/channel layer — see existing
-   patterns in `workspace.py`).
-3. Re-export from `molecule_plugin/__init__.py`.
-4. Add `python -m molecule_plugin validate <kind> /path` CLI cases or hook into
-   the existing dispatch in `__main__.py` if the kind is new.
-5. Add tests in `tests/test_sdk.py` or `tests/test_validators.py`.
-
----
-
-## Release process
-
-PyPI publication is automated via GitHub Actions and triggered by **git tags** with
-a `v` prefix matching the version in `pyproject.toml` (e.g. tag `v0.2.1` publishes
-`molecule-ai-sdk==0.2.1`):
+Watch mode for development:
 
 ```bash
-# 1. Update version in pyproject.toml
-# 2. Tag and push
-git tag v0.2.1
-git push origin v0.2.1
+npm run build -- --watch
 ```
 
-The GitHub Actions workflow handles sdist + wheel build and upload to PyPI.
-No manual steps required. Ensure you have PyPI token permissions in the repo
-secrets before the first release.
+## MCP Tool Conventions
 
----
+All tools follow these conventions to ensure consistent behavior across the server.
 
-## Platform integration notes
+### Naming
 
-`molecule_agent` wraps these Phase 30 HTTP endpoints (all require bearer token
-unless noted):
+- Tool names: `snake_case` (e.g., `list_workspaces`, `create_agent`)
+- Resource names: `camelCase` prefixed by type (e.g., `workspace:default`)
+- Always use present tense imperatives for actions (list, create, delete, not `listing`)
 
-| Method | Endpoint | Phase | Auth |
-|--------|----------|-------|------|
-| `POST` | `/registry/register` | 30.1 | none (issues token) |
-| `GET` | `/workspaces/:id/secrets/values` | 30.2 | bearer |
-| `POST` | `/registry/heartbeat` | 30.1 | bearer |
-| `GET` | `/workspaces/:id/state` | 30.4 | bearer |
-| `GET` | `/registry/:id/peers` | 30.6 | bearer + X-Workspace-ID |
-| `GET` | `/registry/discover/:id` | 30.6 | bearer + X-Workspace-ID |
-| `POST` | peer direct URL (A2A) | 30.6 | bearer + X-Workspace-ID |
-| `POST` | `/workspaces/:id/a2a` (proxy) | 30.6 | bearer + X-Workspace-ID |
-| `POST` | `/workspaces/:id/delegate` | 30.6 | bearer + X-Workspace-ID, 300s timeout |
-| `GET` | `/workspaces/:id/plugins/:name/download` | 30.3 | bearer |
-| `POST` | `/workspaces/:id/plugins` | 30.3 | bearer |
+### Error Codes
 
-**Token** is cached at `~/.molecule/<workspace_id>/.auth_token` with `0600`
-permissions. On restart the client reuses the cached token — the platform
-refuses to issue a second token when one is on file.
+Use structured errors with known codes — never throw plain strings:
 
-**Idempotency (KI-002):** `delegate()` auto-generates an idempotency key as
-`SHA256(task + current_minute)` (rounded to the minute). Two container restarts
-within the same minute that send the same task string share the key, preventing
-duplicate processing.
+| Code | Meaning |
+|------|---------|
+| `TOOL_NOT_FOUND` | Tool/resource name not registered |
+| `INVALID_ARGUMENTS` | Arguments failed schema validation |
+| `PLATFORM_ERROR` | Upstream platform API error |
+| `AUTH_ERROR` | Authentication/authorization failure |
+| `RATE_LIMITED` | Platform rate limit hit |
+| `INTERNAL_ERROR` | Unexpected server-side failure |
 
-**Plugin install:** Tars are extracted with `_safe_extract_tar()` — rejects
-`..` path components and absolute paths; silently skips symlinks/hardlinks.
-Atomic rename via staging dir + rename prevents partial installs.
+All tool responses wrap errors in the MCP `error` shape — never return error text as a plain string in `content`.
 
----
+### Streaming Behavior
 
-## SDK-specific conventions
+- If a tool supports streaming, declare it in the tool manifest
+- Stream results incrementally via `ContentBlock` chunks — do not buffer and return all at once
+- On cancellation, stop emitting and close the stream cleanly (no half-written responses)
 
-- **Python:** `>=3.11`, no external async dependencies in `molecule_agent`
-  (uses blocking `requests` so it embeds in any event loop). `molecule_plugin`
-  adaptor methods are `async` (`install`/`uninstall` satisfy `PluginAdaptor`).
+### Tool Schema
 
-- **Async:** `molecule_plugin` uses `async def`/`await` for `PluginAdaptor`.
-  Call `asyncio.run(adaptor.install(ctx))` to run inline in a sync context.
+Every tool must have a JSON Schema (Draft 7) `inputSchema`. Keep it minimal — only expose parameters the server actually uses. Do not mirror the full platform API surface if MCP does not need it.
 
-- **Error handling:** Network errors in loops are logged and swallowed so a
-  transient platform hiccup does not take a remote agent offline. API-level
-  errors (4xx) propagate via `raise_for_status()`.
+## Release Process
 
-- **Token security:** Token file created with `0o600` — other local users must
-  not be able to read it. `_safe_extract_tar` guards against tar-slip attacks
-  in plugin install.
+Releases are automated via GitHub Actions on every tag matching `v*`.
 
-- **Validation:** `validate_manifest`/`validate_skill`/`validate_plugin` are
-  pure and have no external dependencies (no `jsonschema`). They return lists
-  of error strings. The workspace/org/channel validators return
-  `list[ValidationError]` objects with `.file` and `.message` fields.
+### Cutting a Release
 
-- **First-party plugins:** `test_first_party_plugins_are_spec_compliant()` in
-  `tests/test_sdk.py` validates every plugin in the repo's top-level `plugins/`
-  directory against full agentskills.io spec. Keep that test passing.
+```bash
+# Make sure you're on main and all tests pass
+git checkout main
+git pull
 
----
+# Bump version in package.json, commit
+vim package.json
+git add package.json
+git commit -m "chore: bump version to x.y.z"
 
-## Known issues
+# Tag and push
+git tag vx.y.z
+git push origin main --tags
+```
 
-- Before patching a silent failure or quirky behavior, **file a GitHub issue
-  first**. Do not patch silently — the SDK is consumed across multiple
-  runtime environments and silent patches can cause subtle breakage elsewhere.
+The workflow:
+1. Pushes `v*` tag → triggers `publish.yml` workflow
+2. Workflow runs `npm install`, `npm run build`, `npm test`
+3. On success: publishes to npm (`npm publish --access public`)
+4. Creates a GitHub Release with the tag
 
-- `molecule_agent` does not yet bundle an inbound A2A server helper.
-  Platform-initiated calls to a remote agent without a publicly reachable
-  endpoint will not succeed. See Phase 30.8b in the platform's `PLAN.md`.
+**Do not publish manually.** Let the tag push flow handle it.
 
----
+## Platform Integration
 
-## Relevant platform docs
+### APIs Connected
 
-- **Platform conventions:** `docs/development/constraints-and-rules.md` — no auth
-  for MVP, Postgres as source of truth, no secrets in bundles, generic
-  workspace-template.
-- **Secrets runbook:** `docs/runbooks/saas-secrets.md` — read before rotating any
-  secrets.
-- **Cron learnings:** `cron-learnings.md` (platform root) — read before reviewing
-  PRs; write a 1-line reflection to `.claude/per-tick-reflections.md` after
-  triage.
-- **CLAUDE.md/PLAN.md sync PRs:** treat these as always noteworthy.
-- **molecule-core docs:** Full platform `PLAN.md` and architecture docs at
-  `https://github.com/hongmingw/molecule-monorepo`
+The server connects to the Molecule AI platform REST API. See the platform SDK (`../molecule-sdk-python`) for the underlying API client used.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `MOLECULE_API_URL` | Yes | Base URL of the Molecule platform API |
+| `MOLECULE_API_KEY` | Yes | API key for platform authentication |
+| `MCP_SERVER_PORT` | No | Port to run the MCP server on (default: `3000`) |
+
+For local development, copy `.env.example` → `.env` and fill in values.
+
+### Postgres
+
+Platform data lives in Postgres (source of truth). The server reads data via the platform SDK — it does not connect to Postgres directly.
+
+## TypeScript Conventions
+
+### Async Patterns
+
+- Use `async`/`await` throughout — no `.then()` chains except for bridging legacy callback code
+- Every handler function is `async`
+- Never use `void` async functions unless the MCP spec explicitly requires fire-and-forget
+
+### Error Handling
+
+- Never `console.log` user-facing errors — use structured logging and return MCP errors
+- Wrap every tool handler in a `try/catch`; catch errors and re-throw as MCP-structured errors
+- Avoid non-Error throws (numbers, strings) — always throw or return `Error` instances
+
+### Typing Standards
+
+- Strict mode is enabled (`"strict": true` in `tsconfig.json`)
+- Avoid `any` — use `unknown` and narrow with type guards or Zod validators
+- Use `zod` for all external input validation (API args, tool schemas)
+- Export types from `src/types/` for shared interfaces
+
+### File Structure
+
+```
+src/
+  index.ts          # Server entry point
+  tools/            # MCP tool implementations
+  types/            # Shared TypeScript types
+  utils/            # Helpers, validators
+```
+
+## MCP Tool Registry
+
+Full list of tools exposed by this server. Each is implemented in `src/tools/<name>.ts`.
+
+### Workspace Tools
+| Tool | Description |
+|------|-------------|
+| `list_workspaces` | List all workspaces accessible to the authenticated user |
+| `create_workspace` | Create a new workspace with name, role, tier, and template |
+| `get_workspace` | Get workspace details by ID |
+| `update_workspace` | Patch workspace fields (name, tier, parent_id, etc.) |
+| `delete_workspace` | Delete a workspace (cascades to children) |
+| `restart_workspace` | Restart all agents in a workspace (picks up new secrets/prompts) |
+
+### Agent Tools
+| Tool | Description |
+|------|-------------|
+| `list_agents` | List agents in a workspace |
+| `get_agent` | Get agent details by ID |
+| `send_message` | Send an A2A message to an agent (returns structured response) |
+| `list_peers` | List peer agents discoverable by a given agent |
+
+### Delegation Tools
+| Tool | Description |
+|------|-------------|
+| `delegate_task` | Delegate a task to a child workspace (sync, waits for response) |
+| `delegate_task_async` | Delegate a task to a child workspace (fire-and-forget, returns task_id) |
+
+### Secrets Tools
+| Tool | Description |
+|------|-------------|
+| `get_secret` | Retrieve a secret value for a workspace |
+| `set_secret` | Set a key/value secret for a workspace |
+| `delete_secret` | Delete a secret |
+
+### Files Tools
+| Tool | Description |
+|------|-------------|
+| `list_files` | List files in a workspace container |
+| `get_file` | Read a file's content |
+| `put_file` | Write or update a file in the container |
+| `delete_file` | Delete a file |
+
+### Memory Tools
+| Tool | Description |
+|------|-------------|
+| `commit_memory` | Commit a structured memory entry (with optional namespace) |
+| `recall_memory` | Search previously committed memories |
+
+### Plugins Tools
+| Tool | Description |
+|------|-------------|
+| `install_plugin` | Download and install a plugin into a workspace from the registry |
+
+### Channels Tools
+| Tool | Description |
+|------|-------------|
+| `list_channels` | List communication channels |
+| `get_channel` | Get channel details |
+| `post_message` | Post a message to a channel |
+
+### Schedules Tools
+| Tool | Description |
+|------|-------------|
+| `list_schedules` | List scheduled tasks |
+| `create_schedule` | Create a new scheduled task |
+| `delete_schedule` | Delete a scheduled task |
+
+### Discovery Tools
+| Tool | Description |
+|------|-------------|
+| `check_access` | Verify A2A access between two workspace IDs |
+
+### Remote Agents Tools
+| Tool | Description |
+|------|-------------|
+| `get_remote_agent_info` | Get runtime info for a remote agent |
+| `heartbeat` | Send a heartbeat to the platform |
+
+### Approvals Tools
+| Tool | Description |
+|------|-------------|
+| `list_approvals` | List pending approvals for a workspace |
+| `approve` | Approve a pending item |
+| `reject` | Reject a pending item |
+
+## MCP Transport Gotchas
+
+### STDIO Transport (Claude Desktop, CLI hosts)
+- **Windows CORS issue:** STDIO transport does not use HTTP, so CORS is not a factor — but some Claude Desktop configurations on Windows proxy through an HTTP layer that adds CORS headers. If tools fail silently on Windows, check for a proxy intercepting the STDIO stream.
+- **STDIO timeout:** STDIO mode has no built-in keepalive. If the MCP host is idle for >5 min, the platform may close the workspace. Send a `heartbeat` tool call every ~3 min from long-running sessions.
+- **Windows binary path:** On Windows, the MCP server executable path in Claude Desktop config must use backslashes or forward slashes with escaped backslashes (`\\`) in JSON. Use forward slashes for portability.
+
+### SSE Transport (web hosts)
+- **SSE vs STDIO:** SSE (Server-Sent Events) is used when the MCP host connects over HTTP. It supports streaming responses natively. STDIO is for local CLI tools.
+- **Heartbeat cleanup:** When using SSE, each tool call opens a new HTTP connection. Ensure the host sends a `close` event when the stream finishes to allow connection reuse. Unterminated SSE streams can hold connections open indefinitely.
+
+### `--self-update` Flag
+The server supports a `--self-update` flag for auto-updating:
+```bash
+mcp-server --self-update
+```
+**Proxy TLS note:** If the server is behind a corporate proxy, `--self-update` may fail with a TLS handshake error (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`). The proxy intercepts the TLS cert, and the Go/MJS HTTP client rejects it. Fix: set `NODE_EXTRA_CA_CERTS=/path/to/proxy-ca.pem` in the environment, or disable `rejectUnauthorized` for the update endpoint only (do not disable globally).
+
+## Claude Desktop Configuration
+
+Add this server to Claude Desktop via `claude_desktop_config.json`:
+
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Linux:** `~/.config/Claude/claude_desktop_config.json`
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "molecule-ai": {
+      "command": "node",
+      "args": ["/absolute/path/to/dist/index.js"],
+      "env": {
+        "MOLECULE_API_URL": "https://api.moleculesai.app",
+        "MOLECULE_API_KEY": "your-api-key-here",
+        "MCP_SERVER_PORT": "3000"
+      }
+    }
+  }
+}
+```
+
+To find the absolute path to the built binary:
+```bash
+node dist/index.js --help  # verify path
+```
+
+After editing the config, restart Claude Desktop (fully quit, then reopen) to load the new server.
+
+## Known Issues
+
+See `known-issues.md` at the repo root for the full tracked list.
