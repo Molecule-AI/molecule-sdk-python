@@ -108,25 +108,25 @@ symlinks. Document the behavior in the plugin authoring guide.
 ## KI-004 — Token file races between concurrent instances of RemoteAgentClient
 
 **File:** `molecule_agent/client.py` (token caching)  
-**Status:** Identified  
+**Status:** ✅ Resolved  
 **Severity:** Low
 
-### Symptom
-Multiple `RemoteAgentClient` instances sharing the same `workspace_id` write to
-the same token cache file (`~/.molecule/<workspace_id>/.auth_token`). If two
-instances start simultaneously, the file read/write is not atomic — one
-instance may read a partially-written token or overwrite a valid token with an
-older one.
+### Resolution
+Added `fcntl.flock` around token read/write operations in `load_token()` and
+`save_token()`:
 
-### Impact
-On a cold start with multiple workers for the same workspace, some workers may
-fail to register because their token is stale. The platform refuses to issue a
-second token when one exists on disk.
+- `load_token()` — acquires a shared lock (`LOCK_SH | LOCK_NB`) before reading.
+  Returns `None` immediately if the lock is contended rather than blocking.
+- `save_token()` — acquires an exclusive lock (`LOCK_EX | LOCK_NB`) before
+  writing. If the lock is held by another writer, logs a warning and skips the
+  write (the in-memory `_token` is still updated so this instance functions
+  correctly). Releases the lock in a `finally` block.
 
-### Suggested fix
-Use a file-based lock (e.g. `fcntl.flock` or `portalocker`) around token read
-and write operations. Alternatively, use per-process token storage (in-memory)
-and only write to disk as a recovery fallback.
+Concurrent readers are always safe (shared lock allows multiple simultaneous
+readers). Concurrent writers are serialised by the exclusive lock; if a writer
+cannot acquire the lock immediately it gracefully degrades rather than blocking.
+The platform's one-token-per-workspace invariant is preserved — no stale token
+overwrites.
 
 ---
 

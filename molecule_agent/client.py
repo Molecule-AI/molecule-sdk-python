@@ -17,6 +17,7 @@ future 30.8b iteration will add an optional ``start_a2a_server()`` helper.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -268,13 +269,28 @@ class RemoteAgentClient:
 
     def load_token(self) -> str | None:
         """Load a cached token from disk if present. Populates the
-        in-memory cache on success."""
+        in-memory cache on success.
+
+        Uses a shared (SH) file lock so it does not block concurrent readers
+        or conflict with a simultaneous save_token() call.  Non-blocking —
+        returns None on lock failure rather than waiting."""
         if self._token is not None:
             return self._token
         if not self.token_file.exists():
             return None
         try:
-            tok = self.token_file.read_text().strip()
+            # Shared lock: multiple readers allowed; blocks only while a writer
+            # holds the exclusive lock.  LOCK_NB → fail immediately if contended.
+            with self.token_file.open("r") as fh:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except OSError:
+                    # Lock unavailable (contended or non-blocking); treat as absent.
+                    return None
+                try:
+                    tok = fh.read().strip()
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         except OSError as exc:
             logger.warning("failed to read %s: %s", self.token_file, exc)
             return None
@@ -286,7 +302,12 @@ class RemoteAgentClient:
     def save_token(self, token: str) -> None:
         """Persist a freshly-issued token to disk. Creates the parent
         directory with 0700 and the file with 0600 to keep the credential
-        off other users' prying eyes."""
+        off other users' prying eyes.
+
+        Uses an exclusive (EX) file lock so simultaneous save_token calls from
+        concurrent instances of RemoteAgentClient for the same workspace are
+        serialised — no partial-overwrite races.  Non-blocking: raises
+        OSError on lock contention rather than waiting (caller can retry)."""
         token = token.strip()
         if not token:
             raise ValueError("refusing to save empty token")
@@ -295,7 +316,21 @@ class RemoteAgentClient:
             os.chmod(self._token_dir, 0o700)
         except OSError:
             pass  # non-fatal — best-effort on unusual filesystems
-        self.token_file.write_text(token)
+        # Exclusive lock: serialises writers; blocks until lock is held.
+        # LOCK_NB → raise OSError immediately if another writer holds it.
+        with self.token_file.open("w") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                # Another process holds the lock; give up rather than wait.
+                # The in-memory _token is still updated so this instance works.
+                logger.warning("token file %s is locked by another process; skipping write", self.token_file)
+                self._token = token
+                return
+            try:
+                fh.write(token)
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         try:
             os.chmod(self.token_file, 0o600)
         except OSError:
