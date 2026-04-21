@@ -34,7 +34,23 @@ Design notes:
 
 from __future__ import annotations
 
-from .client import PeerInfo, RemoteAgentClient, WorkspaceState
+from .client import (
+    PeerInfo,
+    RemoteAgentClient,
+    WorkspaceState,
+    verify_plugin_sha256,
+)
 
-__all__ = ["RemoteAgentClient", "WorkspaceState", "PeerInfo", "__version__"]
+# compute_plugin_sha256 lives in __main__ (the CLI entry point).
+# Import it here so `from molecule_agent import compute_plugin_sha256` works.
+from .__main__ import compute_plugin_sha256
+
+__all__ = [
+    "RemoteAgentClient",
+    "WorkspaceState",
+    "PeerInfo",
+    "compute_plugin_sha256",
+    "verify_plugin_sha256",
+    "__version__",
+]
 __version__ = "0.1.0"
