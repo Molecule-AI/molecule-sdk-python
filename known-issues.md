@@ -130,10 +130,11 @@ and only write to disk as a recovery fallback.
 
 ---
 
-## KI-005 — `validate_plugin` does not check for secrets in bundle manifests
+## KI-005 — `validate_manifest` does not check for secrets in bundle manifests
 
 **File:** `molecule_plugin/manifest.py:validate_manifest`  
-**Status:** Not yet implemented  
+**Status:** ✅ Fixed — `_scan_for_secrets()` added; called from `validate_manifest`  
+**Resolved in:** `fix/ki-005-ki-007` branch  
 **Severity:** High
 
 ### Symptom
@@ -191,7 +192,8 @@ the plugin content.
 ## KI-007 — `_is_hex` raises `TypeError` on non-string arguments instead of returning `False`
 
 **File:** `molecule_agent/client.py:_is_hex`  
-**Status:** Identified  
+**Status:** ✅ Fixed — isinstance guard added  
+**Resolved in:** `fix/ki-005-ki-007` branch  
 **Severity:** Low
 
 ### Symptom

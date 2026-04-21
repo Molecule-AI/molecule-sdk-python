@@ -105,7 +105,66 @@ def validate_manifest(path: str | Path) -> list[str]:
                 "`sha256` must contain only lowercase hex characters (0–9, a–f)"
             )
 
+    # Secrets scan — no credentials may appear in any string value
+    for field_name, field_value in raw.items():
+        _scan_for_secrets(field_name, field_value, errors)
+
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Secrets scanning
+# ---------------------------------------------------------------------------
+
+# Patterns matching common credential formats.
+# Anchored with word boundaries where possible to avoid false positives
+# in legitimate content (e.g. "sk" inside "ask").
+_SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # AWS / GCP / Azure keys
+    ("AWS key pattern", re.compile(r"AKIA[0-9A-Z]{16}")),
+    # GitHub fine-grained / classic tokens
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,}")),
+    # GitHub app token
+    ("GitHub app token", re.compile(r"gho_[A-Za-z0-9_]{36}")),
+    # OpenAI / Anthropic / generic sk- keys
+    ("OpenAI/Anthropic key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    # Bearer tokens in JSON/YAML values
+    ("Bearer token", re.compile(r'"[Bb]earer\s+[A-Za-z0-9_.-]+"')),
+    # Long hex strings that look like cryptographic keys (32+ bytes)
+    ("long hex secret", re.compile(r"\b[0-9a-fA-F]{64,}\b")),
+    # Password assignment patterns in YAML values
+    ("password assignment", re.compile(r"(?i)password\s*[=:]\s*['\"]?[A-Za-z0-9_/+=.-]{8,}")),
+    # API key assignment patterns
+    ("api_key assignment", re.compile(r"(?i)api[_-]?key\s*[=:]\s*['\"]?[A-Za-z0-9_/+=.-]{16,}")),
+    # Secret / token assignment patterns
+    ("secret assignment", re.compile(r"(?i)secret\s*[=:]\s*['\"]?[A-Za-z0-9_/+=.-]{16,}")),
+    # Generic bearer string in raw text
+    ("raw bearer", re.compile(r"Bearer [A-Za-z0-9_.-]{20,}")),
+]
+
+
+def _scan_for_secrets(key: str, value: Any, errors: list[str]) -> None:
+    """Recursively scan `value` (and all nested values) for secret patterns.
+
+    Appends error messages to `errors` when a match is found.
+    Skips `sha256` field since it's a content-addressed hash, not a secret.
+    """
+    if key in ("sha256",):
+        return
+    if isinstance(value, str):
+        for description, pattern in _SECRET_PATTERNS:
+            if pattern.search(value):
+                errors.append(
+                    f"possible secret detected in `{key}`: {description} — "
+                    "bundles must not contain credentials; use platform secrets instead"
+                )
+                break  # report first match only to keep noise minimal
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _scan_for_secrets(k, v, errors)
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _scan_for_secrets(f"{key}[{i}]", item, errors)
 
 
 # ---------------------------------------------------------------------------

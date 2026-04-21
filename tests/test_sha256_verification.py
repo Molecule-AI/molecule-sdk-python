@@ -52,17 +52,15 @@ def test_is_hex_invalid_char():
 
 
 def test_is_hex_non_string():
-    """Non-strings fed to _is_hex must not raise unhandled TypeError.
+    """Non-strings fed to _is_hex return False cleanly, not raise TypeError.
 
-    Python's int(None, 16) raises TypeError. The SDK implementation does not
-    guard with isinstance(value, str) first, so non-string values raise TypeError.
-    This test documents the current (unguarded) behaviour. A follow-up should add
-    isinstance(value, str) guard to _is_hex so it returns False cleanly.
+    Python's int(None, 16) raises TypeError. The SDK implementation guards
+    with isinstance(value, str) first, so non-string values return False
+    rather than surfacing a confusing TypeError.
     """
     for val in (None, 123, [], {}):
-        # Currently raises TypeError — documents known gap
-        with pytest.raises(TypeError):
-            _is_hex(val)
+        # After the isinstance guard, non-strings return False cleanly
+        assert _is_hex(val) is False
 
 
 # ---------------------------------------------------------------------------
