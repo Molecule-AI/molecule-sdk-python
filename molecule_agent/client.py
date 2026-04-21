@@ -60,7 +60,7 @@ _RETRY_JITTER_FRAC = 0.25            # ±25% jitter around base delay
 
 def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
     """Extract a tarfile, refusing entries that would escape `dest`
-    and silently skipping symlinks/hardlinks.
+    and logging skipped symlinks/hardlinks.
 
     Tar archives can include ``..`` and absolute paths. Without explicit
     rejection we'd risk the classic "tar slip" CVE — a malicious plugin
@@ -68,12 +68,22 @@ def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
     entry's target to an absolute path, verify it lives inside dest, and
     extract one-by-one so the symlink-skip actually takes effect (a bare
     ``extractall`` would still write the symlinks we marked as skipped).
+
+    Symlinks and hardlinks are skipped and a ``logger.warning`` is emitted
+    for each one so operators can audit what was dropped.
     """
     dest_abs = dest.resolve()
     for member in tf.getmembers():
         # Symlinks and hardlinks could point outside the staged tree;
-        # skip them entirely (matches the platform-side tar producer).
+        # skip them entirely (matches the platform-side tar producer) but
+        # warn so the operator knows what was dropped.
         if member.issym() or member.islnk():
+            link_target = member.linkname
+            logger.warning(
+                "skipping symlink in plugin tarball (not supported for security): %s -> %s",
+                member.name,
+                link_target,
+            )
             continue
         target = (dest / member.name).resolve()
         try:

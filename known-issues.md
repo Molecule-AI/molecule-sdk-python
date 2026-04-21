@@ -83,19 +83,22 @@ the server that needs to honor it.
 ## KI-003 — `_safe_extract_tar` silently skips all symlinks
 
 **File:** `molecule_agent/client.py:_safe_extract_tar`  
-**Status:** By design (security posture)  
+**Status:** ✅ Resolved  
 **Severity:** Low (misleading behavior)
 
-### Symptom
-When extracting plugin tarballs, `_safe_extract_tar` silently skips any entry
-that is a symlink. This means plugin tarballs that legitimately use symlinks
-for shared assets (e.g., `assets/logo.png -> ../shared/logo.png`) will be
-silently omitted from the extracted plugin directory with no error or warning.
+### Resolution
+`_safe_extract_tar` now emits a `logger.warning` for every skipped symlink:
 
-### Impact
-Some valid plugins may appear to install successfully but be missing files at
-runtime. This can manifest as confusing "file not found" errors that are hard to
-trace to the install step.
+```
+skipping symlink in plugin tarball (not supported for security): <name> -> <target>
+```
+
+The file is still skipped (symlinks are a security risk in untrusted tarballs).
+The warning lets operators audit what was dropped without changing the security
+posture.
+
+Added `test_safe_extract_logs_warning_for_skipped_symlink` in
+`tests/test_remote_agent.py` asserting the warning is emitted.
 
 ### Suggested fix
 Emit a `logger.warning()` for each skipped symlink so operators can see what

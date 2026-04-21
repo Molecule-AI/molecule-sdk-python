@@ -755,6 +755,26 @@ def test_safe_extract_skips_symlinks_silently(tmp_path: Path):
     assert not (tmp_path / "link.lnk").exists()
 
 
+def test_safe_extract_logs_warning_for_skipped_symlink(tmp_path: Path, caplog):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        sym = tarfile.TarInfo(name="link.lnk")
+        sym.type = tarfile.SYMTYPE
+        sym.linkname = "/etc/passwd"
+        tf.addfile(sym)
+        info = tarfile.TarInfo(name="real.md")
+        info.size = 2
+        tf.addfile(info, io.BytesIO(b"ok"))
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        _safe_extract_tar(tf, tmp_path)
+    assert (tmp_path / "real.md").exists()
+    assert not (tmp_path / "link.lnk").exists()
+    # A warning must be emitted so operators know what was dropped.
+    assert any("link.lnk" in r.message and "/etc/passwd" in r.message for r in caplog.records)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # verify_plugin_sha256 + content integrity
 # ---------------------------------------------------------------------------
