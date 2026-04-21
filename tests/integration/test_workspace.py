@@ -16,7 +16,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -53,12 +53,24 @@ def _make_response(
 async def _mocked_client(
     func: AsyncMock,
 ) -> AsyncIterator[None]:
-    """Patch ``_client.request`` for the duration of the async context."""
-    _w._client.request = func
-    try:
+    """Patch httpx so that _client.request's own error-checking logic runs.
+
+    Previous approach replaced ``_client.request`` directly, which bypassed
+    its ``if not response.is_success: raise MoleculeAPIError`` guard — making
+    error-path tests useless.  This version patches ``httpx.AsyncClient.request``
+    at source so that every call to the real client goes through the mocked
+    transport and ``_client.request`` code is fully exercised.
+
+    ``func`` (the AsyncMock passed in) is set as the ``side_effect`` of the
+    httpx patch so that ``mock.assert_awaited_once_with(...)`` in the tests
+    records the actual call arguments.
+    """
+    # Ensure a fresh client is created so it picks up the httpx patch.
+    _w._client._CLIENT = None
+    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_httpx:
+        # side_effect makes the original mock record calls and return its own value.
+        mock_httpx.side_effect = func
         yield
-    finally:
-        _w._client.request = _original_request
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +112,11 @@ async def test_list_peers_empty() -> None:
     async with _mocked_client(mock):
         peers = await _w.list_peers()
     assert peers == []
-    mock.assert_awaited_once_with("GET", "/registry/peers", authenticated=True)
+    # authenticated=True is converted to an Authorization header inside
+    # _client.request; assert on the resulting headers instead.
+    mock.assert_awaited_once_with(
+        "GET", "/registry/peers", headers={"Authorization": "Bearer test-api-key-abc123"}
+    )
 
 
 @pytest.mark.asyncio
@@ -199,8 +215,12 @@ async def test_discover_peer_ok() -> None:
         peer = await _w.discover_peer("ws-xyz")
     assert peer.workspace_id == "ws-xyz"
     assert peer.name == "XYZ Workspace"
+    # authenticated=True (the default) is converted to an Authorization header
+    # inside _client.request; assert on the resulting headers instead.
     mock.assert_awaited_once_with(
-        "GET", "/registry/discover/ws-xyz", authenticated=True
+        "GET",
+        "/registry/discover/ws-xyz",
+        headers={"Authorization": "Bearer test-api-key-abc123"},
     )
 
 

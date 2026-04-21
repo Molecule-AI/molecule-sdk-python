@@ -53,6 +53,9 @@ _READ_TIMEOUT: float = 300.0
 #: httpx write timeout in seconds.
 _WRITE_TIMEOUT: float = 30.0
 
+#: httpx pool timeout in seconds (for connection acquisition from pool).
+_POOL_TIMEOUT: float = 5.0
+
 _BASE_URL: str = os.environ.get(_BASE_URL_ENV, DEFAULT_BASE_URL)
 _CLIENT: httpx.AsyncClient | None = None
 
@@ -93,6 +96,7 @@ def get_client() -> httpx.AsyncClient:
                 connect=_CONNECT_TIMEOUT,
                 read=_READ_TIMEOUT,
                 write=_WRITE_TIMEOUT,
+                pool=_POOL_TIMEOUT,
             ),
             headers={"User-Agent": f"molecule-sdk-python/{__import__('molecule_sdk').__version__}"},
         )
