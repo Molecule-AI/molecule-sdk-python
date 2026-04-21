@@ -20,7 +20,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
+import random
 import stat
 import subprocess
 import tarfile
@@ -46,6 +48,13 @@ DEFAULT_STATE_POLL_INTERVAL = 30.0   # seconds
 # moved (restart with new port) is picked up quickly; long enough that
 # we don't hit the discovery endpoint on every A2A call.
 DEFAULT_URL_CACHE_TTL = 300.0        # 5 minutes
+
+# Retry-on-429 defaults for idempotent GET calls.
+# Matches the behaviour of the TypeScript MCP server's platformGet().
+DEFAULT_GET_MAX_RETRIES = 3          # retry up to 3 times on 429
+_RETRY_BASE_DELAY = 1.0              # seconds — first delay
+_RETRY_MAX_DELAY = 30.0              # seconds — cap
+_RETRY_JITTER_FRAC = 0.25            # ±25% jitter around base delay
 
 
 def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
@@ -297,6 +306,43 @@ class RemoteAgentClient:
             return {}
         return {"Authorization": f"Bearer {tok}"}
 
+    def _get_with_retry(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        max_retries: int = DEFAULT_GET_MAX_RETRIES,
+    ) -> requests.Response:
+        """Issue a GET with automatic retry on 429 (Too Many Requests).
+
+        Retries up to ``max_retries`` times, honouring the ``Retry-After``
+        header (seconds, rounded up to ms) when present.  When absent, uses
+        exponential back-off with ±25 % jitter: 1 s → 2 s → 4 s, capped at
+        30 s.
+
+        After exhausting retries returns the final 429 response (caller's
+        ``raise_for_status()`` will turn it into an ``HTTPError``).
+
+        Only use for idempotent GET calls.  POST/DELETE callers must not
+        retry, as the server may have already processed the request.
+        """
+        attempt = 0
+
+        while True:
+            resp = self._session.get(url, headers=headers or {}, timeout=10.0)
+            if resp.status_code != 429 or attempt >= max_retries:
+                return resp
+
+            attempt += 1
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after is not None:
+                delay_s = math.ceil(float(retry_after))
+            else:
+                base = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                jitter = _RETRY_BASE_DELAY * _RETRY_JITTER_FRAC * (random.random() * 2 - 1)
+                delay_s = base + jitter
+            delay_ms = min(int(delay_s * 1000), int(_RETRY_MAX_DELAY * 1000))
+            time.sleep(delay_ms / 1000.0)
+
     # ------------------------------------------------------------------
     # Endpoints
     # ------------------------------------------------------------------
@@ -350,10 +396,9 @@ class RemoteAgentClient:
         means the token is missing / invalid — call :py:meth:`register`
         first).
         """
-        resp = self._session.get(
+        resp = self._get_with_retry(
             f"{self.platform_url}/workspaces/{self.workspace_id}/secrets/values",
             headers=self._auth_headers(),
-            timeout=10.0,
         )
         resp.raise_for_status()
         return resp.json() or {}
@@ -365,10 +410,9 @@ class RemoteAgentClient:
         (workspace hard-deleted) — callers typically exit their run loop
         in that case. Raises on other HTTP errors.
         """
-        resp = self._session.get(
+        resp = self._get_with_retry(
             f"{self.platform_url}/workspaces/{self.workspace_id}/state",
             headers=self._auth_headers(),
-            timeout=10.0,
         )
         if resp.status_code == 404:
             # Platform signals hard-delete via 404 + deleted:true
@@ -428,13 +472,12 @@ class RemoteAgentClient:
         Raises on 401 (stale/missing token → call :py:meth:`register`) and
         other non-2xx.
         """
-        resp = self._session.get(
+        resp = self._get_with_retry(
             f"{self.platform_url}/registry/{self.workspace_id}/peers",
             headers={
                 **self._auth_headers(),
                 "X-Workspace-ID": self.workspace_id,
             },
-            timeout=10.0,
         )
         resp.raise_for_status()
         data = resp.json() or []
@@ -483,13 +526,12 @@ class RemoteAgentClient:
             # Expired — drop and fall through to refresh
             self._url_cache.pop(target_id, None)
 
-        resp = self._session.get(
+        resp = self._get_with_retry(
             f"{self.platform_url}/registry/discover/{target_id}",
             headers={
                 **self._auth_headers(),
                 "X-Workspace-ID": self.workspace_id,
             },
-            timeout=10.0,
         )
         if resp.status_code == 404:
             return None
