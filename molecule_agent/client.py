@@ -788,4 +788,6 @@ __all__ = [
     "DEFAULT_HEARTBEAT_INTERVAL",
     "DEFAULT_STATE_POLL_INTERVAL",
     "DEFAULT_URL_CACHE_TTL",
+    "compute_plugin_sha256",
+    "verify_plugin_sha256",
 ]

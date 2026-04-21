@@ -153,6 +153,18 @@ duplicate processing.
 `..` path components and absolute paths; silently skips symlinks/hardlinks.
 Atomic rename via staging dir + rename prevents partial installs.
 
+**Content integrity (KI-006):** `install_plugin()` verifies the unpacked tarball
+against the `sha256` field in `plugin.yaml` before running `setup.sh`. If the hash
+doesn't match, the staging dir is removed and execution aborts. The hash is a
+content-addressed manifest of all files except `plugin.yaml` (excluded to avoid
+circularity). Generate the hash for a local plugin:
+
+```bash
+python -m molecule_agent verify-sha256 ./my-plugin-dir
+# Outputs: Computed SHA256: <64-char hash>
+# Paste the hash into plugin.yaml under the sha256 field.
+```
+
 ---
 
 ## SDK-specific conventions
