@@ -229,25 +229,11 @@ def _is_hex(value: str) -> bool:
 
 ## KI-008 — `test_call_peer_errors.py` fails collection due to missing `tests/conftest.py`
 
-**File:** `tests/test_call_peer_errors.py:19`  
-**Status:** Identified  
+**File:** `tests/test_call_peer_errors.py`  
+**Status:** ✅ Resolved  
 **Severity:** Low
 
-### Symptom
-`pytest tests/` fails to collect any tests:
-```
-ModuleNotFoundError: No module named 'tests.conftest'
-```
-The file imports `from tests.conftest import _CaptureHandler` using the
-`tests.` package prefix. The cloned repo has no `conftest.py` and uses a
-convention inconsistent with the rest of the test suite (which uses root-relative
-imports).
-
-### Impact
-CI running `pytest tests/` errors before collecting any tests at all. Requires
-`--ignore=tests/test_call_peer_errors.py` to run the full suite.
-
-### Suggested fix
-Either create `tests/conftest.py` with the `_CaptureHandler` stub definition,
-or change the import to use a direct module import (`from conftest import
-_CaptureHandler`) consistent with the rest of the suite.
+### Resolution
+`tests/conftest.py` exists with the `_CaptureHandler` stub definition.
+`pytest tests/test_call_peer_errors.py` runs all 12 tests cleanly.
+`pytest tests/` collects all test files with no collection errors.
