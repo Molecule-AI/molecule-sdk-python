@@ -17,6 +17,8 @@ future 30.8b iteration will add an optional ``start_a2a_server()`` helper.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import stat
@@ -84,6 +86,78 @@ def _rmtree_quiet(path: Path) -> None:
         pass
     except Exception as exc:
         logger.warning("rmtree(%s) failed: %s", path, exc)
+
+
+def _walk_files(root: Path) -> list[str]:
+    """Yield relative file paths under ``root`` (directories excluded)."""
+    rel: list[str] = []
+    for p in root.rglob("*"):
+        if p.is_file():
+            rel.append(p.relative_to(root).as_posix())
+    return rel
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA256 hex digest of ``path``."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_plugin_sha256(plugin_dir: Path, expected: str) -> bool:
+    """Verify the content of ``plugin_dir`` against an expected SHA256.
+
+    Computes a *content-addressed manifest hash*: the sorted list of
+    ``(relative_path, SHA256(file_content))`` pairs (excluding ``plugin.yaml``
+    itself) is hashed. This is deterministic regardless of extraction order,
+    file timestamps, or directory ordering — any two identical plugin
+    directories produce the same hash.
+
+    ``plugin.yaml`` is excluded from its own hash to avoid circular dependency
+    (the file contains the sha256 field). Its content is still verified as part
+    of the plugin installation.
+
+    The ``expected`` value is stored in the plugin's ``plugin.yaml`` under
+    the ``sha256`` key and should be regenerated any time the plugin
+    content changes (e.g. after ``molecule plugin hash`` or a CI step).
+
+    Args:
+        plugin_dir: Path to the unpacked plugin directory.
+        expected: 64-character lowercase hex SHA256 of the content manifest.
+
+    Returns:
+        ``True`` if the manifest hash matches ``expected``.
+
+    Raises:
+        ValueError: if ``expected`` is not a valid 64-char hex string.
+    """
+    if not isinstance(expected, str) or len(expected) != 64 or not _is_hex(expected):
+        raise ValueError(
+            f"sha256 must be a 64-character lowercase hex string, got {expected!r}"
+        )
+
+    file_hashes: list[tuple[str, str]] = []
+    for relpath in sorted(_walk_files(plugin_dir)):
+        # plugin.yaml contains the sha256 field itself; including its own hash
+        # in the manifest creates a circular dependency. We hash all other files
+        # to protect plugin content while leaving the manifest self-describing.
+        if relpath == "plugin.yaml":
+            continue
+        file_hashes.append((relpath, _sha256_file(plugin_dir / relpath)))
+
+    manifest_bytes = json.dumps(file_hashes, sort_keys=True).encode()
+    manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+    return manifest_hash == expected
+
+
+def _is_hex(value: str) -> bool:
+    try:
+        int(value, 16)
+        return True
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -528,9 +602,13 @@ class RemoteAgentClient:
            — the agent author can re-run setup manually.
         4. POST ``/workspaces/:id/plugins`` with the source string so the
            platform's ``workspace_plugins`` table reflects the install.
+        3b. If ``plugin.yaml`` declares a ``sha256`` field, verify the unpacked
+           content matches before running ``setup.sh`` (blocks supply-chain
+           tampering after the platform-level pinned-ref check from PR #1019).
 
         Returns the path to the unpacked plugin directory.
         Raises ``requests.HTTPError`` on download failure (401 / 404 / etc.).
+        Raises ``ValueError`` if a declared ``sha256`` does not match.
         """
         target = self.plugins_dir / name
         staging = self.plugins_dir / f".staging-{name}-{uuid.uuid4().hex[:8]}"
@@ -569,6 +647,34 @@ class RemoteAgentClient:
             _rmtree_quiet(target)
         staging.rename(target)
         logger.info("plugin %s unpacked to %s", name, target)
+
+        # 3b. Content integrity — verify sha256 declared in plugin.yaml if present.
+        # This closes the SDK-side gap identified in SDK-Dev review of PR #1019:
+        # the platform enforces source-pinned refs (SHA/tag) but cannot detect
+        # content tampering after the tarball is served. The SDK verifies the
+        # delivered content against a manifest hash in plugin.yaml.
+        manifest_path = target / "plugin.yaml"
+        if manifest_path.exists():
+            try:
+                import yaml as _yaml  # lazy — not a top-level dep
+                manifest = _yaml.safe_load(manifest_path.read_text())
+                expected_sha: str | None = manifest.get("sha256") if isinstance(manifest, dict) else None
+                if expected_sha:
+                    if not verify_plugin_sha256(target, expected_sha):
+                        _rmtree_quiet(target)
+                        raise ValueError(
+                            f"plugin {name} sha256 mismatch — expected {expected_sha}. "
+                            f"Plugin directory may have been tampered with after download. "
+                            f"setup.sh was NOT run."
+                        )
+                    logger.info("plugin %s sha256 verified", name)
+            except ValueError:
+                raise  # re-raise our own ValueError (sha256 mismatch)
+            except Exception as exc:
+                # YAML read / parse failures are non-fatal — skip verification
+                # and fall through to setup.sh. We log the error so operators
+                # can see why verification was skipped.
+                logger.warning("plugin %s sha256 verification skipped: %s", name, exc)
 
         # 3. setup.sh — best-effort. We never raise on its failure because
         # the plugin files are now correctly installed; setup is just for

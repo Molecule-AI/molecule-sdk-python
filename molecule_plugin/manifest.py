@@ -40,6 +40,16 @@ PLUGIN_YAML_SCHEMA: dict[str, Any] = {
             "items": {"type": "string"},
             "description": "Declared supported runtimes (e.g. claude_code, deepagents).",
         },
+        "sha256": {
+            "type": "string",
+            "description": (
+                "Optional content integrity hash (SHA256) of the plugin directory "
+                "as a content-addressed manifest. If present, install_plugin() verifies "
+                "the unpacked tarball matches before running setup.sh. "
+                "Format: 64 lowercase hex characters. "
+                "Generate with: python -m molecule_agent verify-sha256 <plugin-dir>"
+            ),
+        },
     },
 }
 
@@ -80,6 +90,20 @@ def validate_manifest(path: str | Path) -> list[str]:
                     f"unknown runtime '{r}' — supported: {sorted(known)} "
                     f"(use underscore form, e.g. 'claude_code')"
                 )
+
+    # sha256 — must be a 64-char lowercase hex string if present
+    sha256_val = raw.get("sha256")
+    if sha256_val is not None:
+        if not isinstance(sha256_val, str):
+            errors.append("`sha256` must be a string (64 lowercase hex characters)")
+        elif len(sha256_val) != 64:
+            errors.append(
+                f"`sha256` must be exactly 64 hex characters, got {len(sha256_val)}"
+            )
+        elif not re.fullmatch(r"[0-9a-f]{64}", sha256_val):
+            errors.append(
+                "`sha256` must contain only lowercase hex characters (0–9, a–f)"
+            )
 
     return errors
 

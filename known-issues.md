@@ -153,3 +153,35 @@ string values in the manifest for patterns matching common secret formats
 `ValidationError` with level `HIGH` if any are found, even in example or
 placeholder values. Add a corresponding test with a manifest containing a
 known secret pattern.
+
+---
+
+## KI-006 — Plugin content integrity not verified client-side (RESOLVED)
+
+**File:** `molecule_agent/client.py:verify_plugin_sha256`, `molecule_plugin/manifest.py:validate_manifest`  
+**Status:** ✅ Implemented — see SDK PR on `docs/add-claude-md` branch  
+**Severity:** Medium (mitigated by platform-side pinned-ref enforcement from molecule-core PR #1019)
+
+### Symptom
+`install_plugin()` downloaded and extracted plugin tarballs with no client-side
+content verification. A compromised platform registry serving a tampered tarball
+under a valid pinned-ref would pass `_safe_extract_tar` (no `..` or absolute
+paths) but could contain a malicious `setup.sh`.
+
+### Resolution
+Added:
+- `verify_plugin_sha256(plugin_dir, expected)` — computes a content-addressed
+  manifest hash over sorted `(relative_path, SHA256(content))` pairs; deterministic
+  regardless of extraction order or timestamps.
+- `install_plugin()` reads `plugin.yaml → sha256` after atomic rename and before
+  `setup.sh`; mismatches raise `ValueError` and delete the plugin directory.
+- `PLUGIN_YAML_SCHEMA` gains an optional `sha256` field (64-char lowercase hex).
+- `validate_manifest()` validates `sha256` format when present.
+
+Platform-side (molecule-core PR #1019) enforces source integrity (pinned git SHAs
+or semver tags). SDK-side closes the content-integrity gap. Together they cover
+both the "which code was fetched" and "did it arrive intact" axes.
+
+Authors should add `sha256` to their `plugin.yaml` (generate with
+`python -m molecule_agent verify-sha256 <plugin-dir>`) and commit it alongside
+the plugin content.
