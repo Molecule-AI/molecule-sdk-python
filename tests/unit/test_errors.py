@@ -96,8 +96,9 @@ async def test_request_raises_on_non_2xx_with_status_and_body() -> None:
     mock_client = MagicMock(spec=httpx.AsyncClient)
     mock_client.request = AsyncMock(return_value=mock_response)
 
-    with patch.object(_client, "_CLIENT", None):
-        with patch.object(_client, "get_client", return_value=mock_client):
+    with patch.object(_client, "_CLIENT", None), \
+         patch.object(_client, "auth_headers", return_value={"Authorization": "Bearer test"}), \
+         patch.object(_client, "get_client", return_value=mock_client):
             with pytest.raises(MoleculeAPIError) as exc_info:
                 await _client.request("GET", "/health")
 
@@ -115,8 +116,9 @@ async def test_request_passes_through_on_2xx() -> None:
     mock_client = MagicMock(spec=httpx.AsyncClient)
     mock_client.request = AsyncMock(return_value=mock_response)
 
-    with patch.object(_client, "_CLIENT", None):
-        with patch.object(_client, "get_client", return_value=mock_client):
+    with patch.object(_client, "_CLIENT", None), \
+         patch.object(_client, "auth_headers", return_value={"Authorization": "Bearer test"}), \
+         patch.object(_client, "get_client", return_value=mock_client):
             result = await _client.request("GET", "/health")
 
     assert result is mock_response

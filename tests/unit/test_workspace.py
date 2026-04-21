@@ -65,9 +65,6 @@ async def test_list_peers_returns_list_of_peer_info(mock_request: AsyncMock) -> 
 @pytest.mark.asyncio
 async def test_list_peers_non_2xx_raises_api_error() -> None:
     """A non-2xx response should raise :class:`MoleculeAPIError`."""
-    # Patch httpx.AsyncClient.request at source so that _client.request's
-    # own error-checking logic (if not response.is_success) runs and raises
-    # MoleculeAPIError instead of the patch swallowing it.
     from unittest.mock import PropertyMock
 
     mock_response = MagicMock(spec=httpx.Response)
@@ -78,7 +75,8 @@ async def test_list_peers_non_2xx_raises_api_error() -> None:
     # a real bool (False) rather than a truthy MagicMock child.
     type(mock_response).is_success = PropertyMock(return_value=False)
 
-    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_httpx:
+    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_httpx, \
+         patch.object(_w._client, "auth_headers", return_value={"Authorization": "Bearer test"}):
         mock_httpx.return_value = mock_response
         with pytest.raises(MoleculeAPIError) as exc_info:
             await _w.list_peers()

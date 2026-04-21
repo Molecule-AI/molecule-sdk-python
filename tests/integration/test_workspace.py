@@ -65,9 +65,12 @@ async def _mocked_client(
     httpx patch so that ``mock.assert_awaited_once_with(...)`` in the tests
     records the actual call arguments.
     """
-    # Ensure a fresh client is created so it picks up the httpx patch.
-    _w._client._CLIENT = None
-    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_httpx:
+    # Patch auth_headers first so that get_client() uses it when creating
+    # the fresh client inside the httpx patch context.
+    with patch.object(_w._client, "auth_headers", return_value={"Authorization": "Bearer test-api-key-abc123"}), \
+         patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_httpx:
+        # Ensure a fresh client is created so it picks up the httpx patch.
+        _w._client._CLIENT = None
         # side_effect makes the original mock record calls and return its own value.
         mock_httpx.side_effect = func
         yield
@@ -466,10 +469,12 @@ async def test_missing_api_key_raises_config_error() -> None:
 
     old_key = os.environ.pop("MOL_API_KEY", None)
     try:
-        mock = AsyncMock(
-            return_value=_make_response(200, []),
-        )
-        async with _mocked_client(mock):
+        # Patch the request method on the shared client directly so the real
+        # auth_headers() check inside _client.request fires.
+        _w._client._CLIENT = None  # ensure fresh client so patching works
+        mock_request = AsyncMock(return_value=_make_response(200, []))
+        with patch.object(_w._client, "get_client") as mock_get_client:
+            mock_get_client.return_value.request = mock_request
             with pytest.raises(MoleculeConfigError) as exc_info:
                 await _w.list_peers()
         assert "MOL_API_KEY" in str(exc_info.value)
