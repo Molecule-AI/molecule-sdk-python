@@ -162,6 +162,8 @@ def verify_plugin_sha256(plugin_dir: Path, expected: str) -> bool:
 
 
 def _is_hex(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
     try:
         int(value, 16)
         return True
