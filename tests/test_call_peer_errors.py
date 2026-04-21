@@ -1,79 +1,25 @@
-"""GAP-03 / GAP-11: call_peer error paths — documents and tests the error surface.
+"""GAP-03: call_peer error paths — documents and tests the error surface.
 
-Per PLAN.md backlog #13: call_peer must surface structured errors (HTTP
-status, auth context) rather than opaque strings. These tests verify the
-error surface using the same FakeResponse / MagicMock pattern as the rest of
-the test suite.
+Per PLAN.md backlog #13: ClaudeSDKExecutor surfaces opaque "Command failed"
+without capturing stderr. These tests document the desired behavior for the
+SDK's call_peer method in molecule_agent/client.py.
+
+The tests use the ``client`` fixture (MagicMock session) to simulate error
+conditions without a live platform.
 """
 from __future__ import annotations
 
-import time
+import sys
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
-from molecule_agent import RemoteAgentClient
+_SDK_ROOT = Path(__file__).resolve().parents[1]
+if str(_SDK_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SDK_ROOT))
 
-
-# ---------------------------------------------------------------------------
-# FakeResponse — minimal requests.Response stand-in
-# ---------------------------------------------------------------------------
-
-
-class FakeResponse:
-    """Minimal stand-in for ``requests.Response``."""
-
-    def __init__(
-        self,
-        status_code: int = 200,
-        json_body: Any = None,
-        text: str = "",
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        self.status_code = status_code
-        self._json = json_body
-        self.text = text
-        self.headers = headers or {}
-
-    def json(self) -> Any:
-        return self._json
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            import requests
-            raise requests.HTTPError(f"HTTP {self.status_code}")
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def tmp_token_dir(tmp_path: Path) -> Path:
-    return tmp_path / "molecule-token-cache"
-
-
-@pytest.fixture
-def client(tmp_token_dir: Path) -> RemoteAgentClient:
-    session = MagicMock()
-    return RemoteAgentClient(
-        workspace_id="ws-test-123",
-        platform_url="http://platform.test",
-        agent_card={"name": "test-agent"},
-        token_dir=tmp_token_dir,
-        session=session,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Error surface tests
-# ---------------------------------------------------------------------------
-
-# Note: call_peer(message: str) — the public API accepts a plain string.
-# Internal A2A envelope is built by the client. Tests pass strings.
+from molecule_agent.client import RemoteAgentClient
+from tests.conftest import FakeResponse
 
 
 class TestCallPeerErrors:
@@ -177,6 +123,7 @@ class TestCallPeerErrors:
         - Proxy POST succeeds → result returned
         """
         # Seed the cache so discover_peer returns a URL (cache hit, no GET needed)
+        import time
         client._url_cache["peer-id"] = ("http://dead.peer:8000", time.time() + 60)
 
         post_calls = []
