@@ -185,3 +185,64 @@ both the "which code was fetched" and "did it arrive intact" axes.
 Authors should add `sha256` to their `plugin.yaml` (generate with
 `python -m molecule_agent verify-sha256 <plugin-dir>`) and commit it alongside
 the plugin content.
+
+---
+
+## KI-007 — `_is_hex` raises `TypeError` on non-string arguments instead of returning `False`
+
+**File:** `molecule_agent/client.py:_is_hex`  
+**Status:** Identified  
+**Severity:** Low
+
+### Symptom
+`_is_hex` is called inside `verify_plugin_sha256` after a length check. When
+passed a non-string argument (e.g. `None`, an `int`, a `list`), `int(value, 16)`
+raises `TypeError: int() can't convert non-string with explicit base` instead of
+returning `False`. `verify_plugin_sha256` would surface a confusing `TypeError`
+rather than a descriptive validation error.
+
+### Impact
+Any bug passing a non-string `expected` to `verify_plugin_sha256` produces a
+confusing `TypeError` instead of the intended `ValueError`. Low-probability
+edge case (function is internal), but violates the principle that validator
+functions should never raise unexpected exceptions.
+
+### Suggested fix
+Guard at the top of `_is_hex`:
+```python
+def _is_hex(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        int(value, 16)
+        return True
+    except ValueError:
+        return False
+```
+
+---
+
+## KI-008 — `test_call_peer_errors.py` fails collection due to missing `tests/conftest.py`
+
+**File:** `tests/test_call_peer_errors.py:19`  
+**Status:** Identified  
+**Severity:** Low
+
+### Symptom
+`pytest tests/` fails to collect any tests:
+```
+ModuleNotFoundError: No module named 'tests.conftest'
+```
+The file imports `from tests.conftest import _CaptureHandler` using the
+`tests.` package prefix. The cloned repo has no `conftest.py` and uses a
+convention inconsistent with the rest of the test suite (which uses root-relative
+imports).
+
+### Impact
+CI running `pytest tests/` errors before collecting any tests at all. Requires
+`--ignore=tests/test_call_peer_errors.py` to run the full suite.
+
+### Suggested fix
+Either create `tests/conftest.py` with the `_CaptureHandler` stub definition,
+or change the import to use a direct module import (`from conftest import
+_CaptureHandler`) consistent with the rest of the suite.
