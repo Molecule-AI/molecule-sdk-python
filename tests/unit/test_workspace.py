@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import httpx
 import pytest
@@ -63,19 +63,27 @@ async def test_list_peers_returns_list_of_peer_info(mock_request: AsyncMock) -> 
 
 
 @pytest.mark.asyncio
-async def test_list_peers_non_2xx_raises_api_error(mock_request: AsyncMock) -> None:
+async def test_list_peers_non_2xx_raises_api_error() -> None:
     """A non-2xx response should raise :class:`MoleculeAPIError`."""
+    # Patch httpx.AsyncClient.request at source so that _client.request's
+    # own error-checking logic (if not response.is_success) runs and raises
+    # MoleculeAPIError instead of the patch swallowing it.
+    from unittest.mock import PropertyMock
+
     mock_response = MagicMock(spec=httpx.Response)
-    mock_response.is_success = False
     mock_response.status_code = 500
     mock_response.text = "Internal Server Error"
     mock_response.json.return_value = {"error": "boom"}
-    mock_request.return_value = mock_response
+    # httpx.Response.is_success is a property; use PropertyMock so it returns
+    # a real bool (False) rather than a truthy MagicMock child.
+    type(mock_response).is_success = PropertyMock(return_value=False)
 
-    with pytest.raises(MoleculeAPIError) as exc_info:
-        await _w.list_peers()
+    with patch("httpx.AsyncClient.request", new_callable=AsyncMock) as mock_httpx:
+        mock_httpx.return_value = mock_response
+        with pytest.raises(MoleculeAPIError) as exc_info:
+            await _w.list_peers()
 
-    assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 500
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +151,11 @@ async def test_delegate_sync_returns_delegation_response(
 
     result = await _w.delegate("ws-remote", "What is the answer?")
     mock_request.assert_awaited_once()
-    call_kwargs = mock_request.await_args
-    assert call_kwargs.kwargs["url"] == "/a2a/delegate"
-    payload = call_kwargs.kwargs["json"]
+    call_args = mock_request.await_args
+    # positional args: (method, url)
+    assert call_args.args[1] == "/a2a/delegate"
+    # keyword args: (json=...)
+    payload = call_args.kwargs["json"]
     assert payload["task"] == "What is the answer?"
     assert payload["async_mode"] is False
     assert result.task_id == "task-42"
@@ -226,6 +236,5 @@ async def test_task_status_returns_async_task_ref(
     result = await _w.task_status("task-7")
 
     assert result.task_id == "task-7"
-    mock_request.assert_awaited_once_with(
-        "GET", "/a2a/tasks/task-7", authenticated=True
-    )
+    # authenticated=True is the default; omit it from the assertion
+    mock_request.assert_awaited_once_with("GET", "/a2a/tasks/task-7")
