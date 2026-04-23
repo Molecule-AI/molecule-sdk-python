@@ -958,39 +958,6 @@ __all__ = [
     "DEFAULT_HEARTBEAT_INTERVAL",
     "DEFAULT_STATE_POLL_INTERVAL",
     "DEFAULT_URL_CACHE_TTL",
-# Retry-on-429 defaults for idempotent GET calls.
-# Matches the behaviour of the TypeScript MCP server's platformGet().
-DEFAULT_GET_MAX_RETRIES = 3          # retry up to 3 times on 429
-_RETRY_BASE_DELAY = 1.0              # seconds — first delay
-_RETRY_MAX_DELAY = 30.0              # seconds — cap
-_RETRY_JITTER_FRAC = 0.25            # ±25% jitter around base delay
-
-# KI-002 — idempotency key granularity: round to the current minute so
-# that concurrent restarts within the same 60-second window produce the
-# same key, while distinct tasks or distinct minutes produce distinct keys.
-_IDEMPOTENCY_ROUND_SECONDS = 60
-
-
-def make_idempotency_key(task_text: str) -> str:
-    """Compute a deterministic idempotency key for a delegation task.
-
-    Combines the task text with the current wall-clock minute to produce
-    a SHA-256 hex digest. Rounding to minute-level means two container
-    restarts within the same minute that send the same task string will
-    share the same key, preventing the platform from processing a duplicate
-    delegation. A different minute (or a different task string) yields a
-    different key.
-
-    Args:
-        task_text: The task description string being delegated.
-
-    Returns:
-        A 64-character hex string (SHA-256 digest).
-    """
-    # Round current time down to the nearest minute — same-task restarts
-    # within this minute share a key; after the minute rolls over the key
-    # changes so a genuinely new task is always treated as new.
-    now = int(time.time()) // _IDEMPOTENCY_ROUND_SECONDS * _IDEMPOTENCY_ROUND_SECONDS
-    payload = f"{task_text}:{now}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    "verify_plugin_sha256",
+    "make_idempotency_key",
 ]
