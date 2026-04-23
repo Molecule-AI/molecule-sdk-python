@@ -24,7 +24,6 @@ import logging
 import math
 import os
 import random
-import stat
 import subprocess
 import tarfile
 import time
@@ -961,3 +960,4 @@ __all__ = [
     "verify_plugin_sha256",
     "make_idempotency_key",
 ]
+
