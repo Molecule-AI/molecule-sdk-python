@@ -12,8 +12,9 @@ a Phase 30 endpoint:
   returns when the platform reports the workspace paused or deleted.
 
 No inbound A2A server is bundled here yet — that requires hosting an HTTP
-endpoint the platform's proxy can reach, which is network-dependent. A
-future 30.8b iteration will add an optional ``start_a2a_server()`` helper.
+endpoint the platform's proxy can reach, which is network-dependent.
+Use :class:`molecule_agent.a2a_server.A2AServer` to add inbound A2A support.
+See that module for usage and the Phase 30.8b contract.
 """
 from __future__ import annotations
 
