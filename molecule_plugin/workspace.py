@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -115,3 +114,4 @@ def validate_workspace_template(path: Path) -> list[ValidationError]:
 
 # Re-exported for type hints in __init__.py
 __all__ = ["ValidationError", "SUPPORTED_RUNTIMES", "validate_workspace_template"]
+
