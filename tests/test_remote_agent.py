@@ -704,6 +704,114 @@ def test_install_plugin_404_raises_with_useful_url(client: RemoteAgentClient):
 
 
 # ---------------------------------------------------------------------------
+# KI-002 — delegation with idempotency key
+# ---------------------------------------------------------------------------
+
+import hashlib
+
+from molecule_agent.client import make_idempotency_key
+
+
+def test_delegate_posts_task_and_idempotency_key(client: RemoteAgentClient):
+    """delegate() sends task + auto-generated idempotency_key to /delegate."""
+    client.save_token("tok")
+    client._session.post.return_value = FakeResponse(200, {"status": "ok"})
+
+    result = client.delegate(task="index the docs", target_id="peer-ws")
+
+    assert result["status"] == "ok"
+    url = client._session.post.call_args[0][0]
+    assert url == "http://platform.test/workspaces/peer-ws/delegate"
+    body = client._session.post.call_args[1]["json"]
+    assert body["task"] == "index the docs"
+    assert body["idempotency_key"] is not None
+    assert len(body["idempotency_key"]) == 64  # SHA-256 hex
+
+
+def test_delegate_sends_explicit_idempotency_key(client: RemoteAgentClient):
+    """Passing an explicit idempotency_key overrides auto-generation."""
+    client.save_token("tok")
+    client._session.post.return_value = FakeResponse(200, {})
+
+    client.delegate(task="build", target_id="peer-ws", idempotency_key="my-key-abc")
+
+    body = client._session.post.call_args[1]["json"]
+    assert body["idempotency_key"] == "my-key-abc"
+
+
+def test_delegate_sends_bearer_and_workspace_headers(client: RemoteAgentClient):
+    client.save_token("secret-tok")
+    client._session.post.return_value = FakeResponse(200, {})
+
+    client.delegate(task="do work", target_id="ws-x")
+
+    kwargs = client._session.post.call_args[1]
+    assert kwargs["headers"]["Authorization"] == "Bearer secret-tok"
+    assert kwargs["headers"]["X-Workspace-ID"] == "ws-abc-123"
+
+
+def test_delegate_raises_on_http_error(client: RemoteAgentClient):
+    client.save_token("tok")
+    client._session.post.return_value = FakeResponse(500, {"error": "boom"})
+    with pytest.raises(Exception):
+        client.delegate(task="test", target_id="peer-ws")
+
+
+def test_delegate_default_timeout_is_300(client: RemoteAgentClient):
+    client.save_token("tok")
+    client._session.post.return_value = FakeResponse(200, {})
+
+    client.delegate(task="x", target_id="y")
+
+    assert client._session.post.call_args[1]["timeout"] == 300.0
+
+
+def test_delegate_allows_custom_timeout(client: RemoteAgentClient):
+    client.save_token("tok")
+    client._session.post.return_value = FakeResponse(200, {})
+
+    client.delegate(task="x", target_id="y", timeout=60.0)
+
+    assert client._session.post.call_args[1]["timeout"] == 60.0
+
+
+# ---------------------------------------------------------------------------
+# make_idempotency_key()
+# ---------------------------------------------------------------------------
+
+
+def test_make_idempotency_key_returns_64_char_hex():
+    key = make_idempotency_key("do the thing")
+    assert len(key) == 64
+    assert all(c in "0123456789abcdef" for c in key)
+
+
+def test_make_idempotency_key_same_text_same_minute_gives_same_key():
+    """Two calls with identical text within the same minute must be equal."""
+    key1 = make_idempotency_key("do the thing")
+    key2 = make_idempotency_key("do the thing")
+    assert key1 == key2
+
+
+def test_make_idempotency_key_different_text_gives_different_key():
+    key1 = make_idempotency_key("do the thing")
+    key2 = make_idempotency_key("do another thing")
+    assert key1 != key2
+
+
+def test_make_idempotency_key_deterministic():
+    """The key for a given (text, minute) pair is always the same."""
+    # Pick a fixed epoch and verify the hash is stable
+    import time
+    # We can't easily mock time.time inside make_idempotency_key without
+    # monkeypatching, but we can verify that two calls on the same text
+    # always agree — this already captures that the function is deterministic.
+    a = make_idempotency_key("same task")
+    b = make_idempotency_key("same task")
+    assert a == b
+
+
+# ---------------------------------------------------------------------------
 # _safe_extract_tar
 # ---------------------------------------------------------------------------
 

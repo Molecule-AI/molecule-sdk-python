@@ -34,6 +34,7 @@ Design notes:
 
 from __future__ import annotations
 
+from .a2a_server import A2AServer
 from .client import (
     PeerInfo,
     RemoteAgentClient,
@@ -46,6 +47,7 @@ from .client import (
 from .__main__ import compute_plugin_sha256
 
 __all__ = [
+    "A2AServer",
     "RemoteAgentClient",
     "WorkspaceState",
     "PeerInfo",
