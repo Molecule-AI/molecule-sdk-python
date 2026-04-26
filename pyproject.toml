@@ -29,9 +29,9 @@ dependencies = [
 test = ["pytest-asyncio>=0.24"]
 
 [project.urls]
-Homepage = "https://github.com/hongmingw/molecule-monorepo"
-Repository = "https://github.com/hongmingw/molecule-monorepo"
-Documentation = "https://github.com/hongmingw/molecule-monorepo/tree/main/sdk/python"
+Homepage = "https://github.com/Molecule-AI/molecule-sdk-python"
+Repository = "https://github.com/Molecule-AI/molecule-sdk-python"
+Documentation = "https://github.com/Molecule-AI/molecule-sdk-python#readme"
 
 [tool.setuptools.packages.find]
 include = ["molecule_plugin*", "molecule_agent*"]
