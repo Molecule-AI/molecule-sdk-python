@@ -31,9 +31,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
+
+if TYPE_CHECKING:
+    from .inbound import InboundDelivery, InboundMessage, MessageHandler
 
 logger = logging.getLogger(__name__)
 
@@ -686,6 +689,266 @@ class RemoteAgentClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    # ------------------------------------------------------------------
+    # Inbound delivery (poll mode) — Phase 30.8c
+    # ------------------------------------------------------------------
+
+    def fetch_inbound(
+        self,
+        since_id: str | None = None,
+        limit: int = 100,
+        type: str = "a2a_receive",
+    ) -> list["InboundMessage"]:
+        """Fetch one batch of inbound A2A activity rows.
+
+        Hits ``GET /workspaces/:id/activity?type=…&since_id=…&limit=…``.
+        Returns the rows newer than ``since_id`` in oldest-first order,
+        parsed into :class:`~molecule_agent.inbound.InboundMessage`.
+
+        Used by :class:`~molecule_agent.inbound.PollDelivery`; most callers
+        should drive this through :py:meth:`run_agent_loop` rather than
+        polling manually.
+
+        Args:
+            since_id: Activity-id cursor — only rows newer than this are
+                returned. Pass ``None`` for the initial fetch.
+            limit: Max rows per batch. Default 100. Server-side cap may
+                lower this.
+            type: Activity-row type filter. Default ``"a2a_receive"``;
+                pass another type to consume different streams (e.g.
+                ``"workspace_state_changed"``).
+
+        Returns:
+            List of :class:`InboundMessage`, oldest first. May be empty.
+
+        Raises:
+            :class:`~molecule_agent.inbound.CursorLostError`: if the server
+                returns 410 Gone (cursor's row has been rotated out of the
+                activity window). Caller should reset the cursor and retry.
+            ``requests.HTTPError``: on other non-2xx responses (401, 5xx, …).
+        """
+        # Local import to avoid a circular dependency at module load — the
+        # inbound module references RemoteAgentClient via TYPE_CHECKING.
+        from .inbound import CursorLostError, _parse_activity_row
+
+        params: dict[str, str] = {"type": type, "limit": str(int(limit))}
+        if since_id:
+            params["since_id"] = since_id
+        url = f"{self.platform_url}/workspaces/{self.workspace_id}/activity"
+        resp = self._session.get(
+            url,
+            headers=self._auth_headers(),
+            params=params,
+            timeout=15.0,
+        )
+        if resp.status_code == 410:
+            raise CursorLostError(
+                f"cursor {since_id!r} no longer valid (410 Gone); reset and re-poll"
+            )
+        # 429 retry: rebuild the URL with encoded query string and route
+        # through _get_with_retry, which honours Retry-After + jittered
+        # backoff. We only retry on 429 — every other status falls through
+        # to raise_for_status below.
+        if resp.status_code == 429:
+            from urllib.parse import urlencode
+            resp = self._get_with_retry(
+                url + "?" + urlencode(params),
+                headers=self._auth_headers(),
+            )
+        resp.raise_for_status()
+
+        rows = resp.json() or []
+        if not isinstance(rows, list):
+            # Defensive: if the server ever wraps in {"items": […]} we
+            # accept that shape too rather than silently dropping data.
+            rows = rows.get("items", []) if isinstance(rows, dict) else []
+
+        out: list["InboundMessage"] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            msg = _parse_activity_row(row)
+            if msg is not None:
+                out.append(msg)
+        return out
+
+    def reply(self, message: "InboundMessage", text: str) -> None:
+        """Reply to an inbound message.
+
+        The reply transport is picked from ``message.source``:
+
+        * ``canvas_user`` → ``POST /workspaces/:id/notify`` with
+          ``{"message": text}``. The canvas surfaces the text to the user.
+        * ``peer_agent`` → ``POST /workspaces/:peer_id/a2a`` with a JSON-RPC
+          ``message/send`` envelope and ``X-Source-Workspace-Id`` header.
+        * ``unknown`` → raises ``ValueError``. The SDK refuses to guess the
+          transport; the caller should inspect ``message.raw`` and use
+          :py:meth:`call_peer` or a direct HTTP call as appropriate.
+
+        Args:
+            message: The :class:`InboundMessage` being replied to. Determines
+                the transport.
+            text: Reply text. Empty / whitespace-only strings raise
+                ``ValueError`` to prevent accidental silent acks.
+
+        Raises:
+            ``ValueError``: on empty text or unknown source.
+            ``requests.HTTPError``: on non-2xx server response.
+        """
+        if not text or not text.strip():
+            raise ValueError("reply text must be non-empty")
+
+        if message.source == "canvas_user":
+            resp = self._session.post(
+                f"{self.platform_url}/workspaces/{self.workspace_id}/notify",
+                headers={
+                    **self._auth_headers(),
+                    "Content-Type": "application/json",
+                },
+                json={"message": text},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            return
+
+        if message.source == "peer_agent":
+            target = message.source_id or ""
+            if not target:
+                raise ValueError(
+                    "peer_agent inbound message has no source_id — cannot route reply"
+                )
+            body = {
+                "jsonrpc": "2.0",
+                "id": str(uuid.uuid4()),
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "agent",
+                        "messageId": str(uuid.uuid4()),
+                        "parts": [{"kind": "text", "text": text}],
+                    }
+                },
+            }
+            resp = self._session.post(
+                f"{self.platform_url}/workspaces/{target}/a2a",
+                headers={
+                    **self._auth_headers(),
+                    "X-Source-Workspace-Id": self.workspace_id,
+                    "X-Workspace-ID": self.workspace_id,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            return
+
+        raise ValueError(
+            f"cannot auto-route reply for source={message.source!r}; "
+            "inspect message.raw and call /notify or /a2a directly"
+        )
+
+    def run_agent_loop(
+        self,
+        handler: "MessageHandler",
+        delivery: "InboundDelivery | None" = None,
+        max_iterations: int | None = None,
+        task_supplier: "callable | None" = None,
+    ) -> str:
+        """Combined heartbeat + state-poll + inbound-delivery loop.
+
+        Generalization of :py:meth:`run_heartbeat_loop` that also drains
+        inbound messages on every tick. This is the recommended entry
+        point for an external agent author — registers, heartbeats,
+        state-polls, and dispatches inbound, all in one sync call.
+
+        Args:
+            handler: ``Callable[[InboundMessage, RemoteAgentClient],
+                str | None | Awaitable[str | None]]``. Invoked once per
+                inbound message. Returning a non-empty string sends an
+                automatic reply via :py:meth:`reply`. ``None`` skips the
+                reply (useful for fire-and-forget consumers).
+            delivery: An :class:`InboundDelivery` implementation. Defaults
+                to :class:`PollDelivery` (the right choice when the agent
+                can't expose an inbound URL — i.e. ``reported_url`` is
+                empty or starts with ``remote://``). Pass an explicit
+                :class:`PushDelivery` (constructed around an
+                :class:`A2AServer`) for push-mode agents.
+            max_iterations: Stop after N iterations. ``None`` = run until
+                the platform reports the workspace paused or deleted.
+            task_supplier: Optional zero-arg callable returning a dict
+                ``{"current_task": str, "active_tasks": int}`` reported on
+                each heartbeat (same contract as :py:meth:`run_heartbeat_loop`).
+
+        Returns:
+            The terminal status: ``"paused"``, ``"removed"``, or
+            ``"max_iterations"``.
+
+        Errors from the activity poll, heartbeat, or state poll are
+        logged and the loop continues — a transient platform hiccup
+        should not take a remote agent offline. Handler exceptions are
+        caught at the delivery layer (see :class:`PollDelivery`).
+        """
+        from .inbound import PollDelivery
+
+        if delivery is None:
+            delivery = PollDelivery(self)
+
+        i = 0
+        try:
+            while True:
+                if max_iterations is not None and i >= max_iterations:
+                    return "max_iterations"
+                i += 1
+
+                report: dict[str, Any] = {}
+                if task_supplier is not None:
+                    try:
+                        report = task_supplier() or {}
+                    except Exception as exc:
+                        logger.warning("task_supplier raised: %s", exc)
+
+                try:
+                    self.heartbeat(
+                        current_task=str(report.get("current_task", "")),
+                        active_tasks=int(report.get("active_tasks", 0)),
+                    )
+                except Exception as exc:
+                    logger.warning("heartbeat failed: %s — continuing", exc)
+
+                try:
+                    delivery.run_once(handler)
+                except Exception as exc:
+                    logger.warning("inbound delivery.run_once raised: %s — continuing", exc)
+
+                try:
+                    state = self.poll_state()
+                except Exception as exc:
+                    logger.warning("state poll failed: %s — continuing", exc)
+                    state = None
+
+                if state is not None and state.should_stop:
+                    logger.info(
+                        "platform reports workspace %s (paused=%s deleted=%s) — exiting",
+                        state.status, state.paused, state.deleted,
+                    )
+                    return state.status
+
+                # Sleep cadence: take the smaller of heartbeat_interval and
+                # the delivery's poll interval (when present) so inbound
+                # latency is bounded by the delivery's setting, not by the
+                # heartbeat cadence.
+                interval = self.heartbeat_interval
+                poll_interval = getattr(delivery, "interval", None)
+                if isinstance(poll_interval, (int, float)) and poll_interval > 0:
+                    interval = min(interval, float(poll_interval))
+                time.sleep(interval)
+        finally:
+            try:
+                delivery.stop()
+            except Exception as exc:
+                logger.warning("delivery.stop raised on loop exit: %s", exc)
 
     # ------------------------------------------------------------------
     # Delegation — KI-002 idempotency guard

@@ -41,6 +41,16 @@ from .client import (
     WorkspaceState,
     verify_plugin_sha256,
 )
+from .inbound import (
+    CursorLostError,
+    DEFAULT_POLL_INTERVAL,
+    InboundDelivery,
+    InboundMessage,
+    InboundSource,
+    MessageHandler,
+    PollDelivery,
+    PushDelivery,
+)
 
 # compute_plugin_sha256 lives in __main__ (the CLI entry point).
 # Import it here so `from molecule_agent import compute_plugin_sha256` works.
@@ -51,6 +61,14 @@ __all__ = [
     "RemoteAgentClient",
     "WorkspaceState",
     "PeerInfo",
+    "InboundMessage",
+    "InboundSource",
+    "InboundDelivery",
+    "PollDelivery",
+    "PushDelivery",
+    "MessageHandler",
+    "CursorLostError",
+    "DEFAULT_POLL_INTERVAL",
     "compute_plugin_sha256",
     "verify_plugin_sha256",
     "__version__",

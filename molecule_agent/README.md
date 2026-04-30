@@ -57,13 +57,62 @@ A runnable demo with full setup walkthrough lives at
 | `heartbeat(...)` | 30.1 | Single bearer-authed heartbeat |
 | `get_peers()` / `discover_peer()` | 30.6 | Sibling URL discovery with TTL cache |
 | `call_peer(target, message)` | 30.6 | Direct A2A with proxy fallback |
+| `fetch_inbound(since_id=…)` | 30.8c | One-shot poll of `/workspaces/:id/activity` for inbound A2A |
+| `reply(msg, text)` | 30.8c | Smart-routes reply to `/notify` (canvas user) or `/a2a` (peer) |
 | `run_heartbeat_loop()` | combo | Drives heartbeat + state-poll on a timer; exits on pause/delete |
+| `run_agent_loop(handler)` | combo | Heartbeat + state + **inbound dispatch**; exits on pause/delete |
+
+## Inbound delivery — push vs poll
+
+Two ways an external agent can receive A2A messages:
+
+| Path | When to use | Class |
+|---|---|---|
+| **Push** | Your agent has a publicly reachable URL (cloud VM, ngrok tunnel) | `A2AServer` (Phase 30.8b) |
+| **Poll** | Your agent is behind NAT, on a laptop, or in a CI runner with no public URL | `PollDelivery` (Phase 30.8c) |
+
+Both dispatch to the same `MessageHandler` callback through `run_agent_loop`:
+
+```python
+from molecule_agent import RemoteAgentClient, InboundMessage
+
+def my_handler(msg: InboundMessage, client: RemoteAgentClient) -> str | None:
+    print(f"← {msg.source}: {msg.text}")
+    return f"echo: {msg.text}"   # auto-routed via /notify or /a2a
+
+client = RemoteAgentClient(workspace_id="…", platform_url="…")
+client.register()
+client.run_agent_loop(my_handler)   # default: PollDelivery
+```
+
+The reply transport (`/notify` for canvas users, `/a2a` for peer agents) is hidden — `client.reply(msg, text)` picks based on `msg.source`. Async handlers work too; `PollDelivery` detects awaitable returns and `asyncio.run`s them.
+
+## CLI: `molecule_agent connect`
+
+One command bootstraps the full poll-mode loop. No code beyond your handler:
+
+```bash
+python -m molecule_agent connect \
+    --platform-url https://your-tenant.moleculesai.app \
+    --workspace-id 550e8400-… \
+    --token your-workspace-token \
+    --handler my_handlers:echo \
+    --poll-interval 5 \
+    --cursor-file ~/.molecule/cursor
+```
+
+Where `my_handlers.py` is anywhere on `PYTHONPATH`:
+
+```python
+def echo(msg, client):
+    return f"echo: {msg.text}"
+```
+
+All flags also read from environment variables (`MOLECULE_PLATFORM_URL`, `MOLECULE_WORKSPACE_ID`, `MOLECULE_WORKSPACE_TOKEN`, `MOLECULE_POLL_INTERVAL`, `MOLECULE_CURSOR_FILE`). SIGTERM/SIGINT shut the loop down cleanly.
 
 ## What it doesn't do (yet)
 
-- **No inbound A2A server.** Other agents can't initiate calls to your remote
-  agent unless you host an HTTP endpoint yourself. Future `start_a2a_server()`
-  helper will close this gap.
+- **No long-poll.** Activity polling is fixed-cadence (default 5s). Server-side long-poll support would cut p50 inbound latency to ~0; tracked separately.
 - **No automatic reconnect after token loss.** If `~/.molecule/<id>/.auth_token`
   is deleted, you'll need to re-issue the token via the platform admin (since
   `POST /registry/register` is idempotent — it won't mint a second token for
