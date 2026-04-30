@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 import requests
@@ -221,6 +221,33 @@ def test_fetch_inbound_401_raises_http_error(client: RemoteAgentClient):
 def test_fetch_inbound_empty_returns_empty(client: RemoteAgentClient):
     client._session.get.return_value = FakeResponse(200, [])
     assert client.fetch_inbound() == []
+
+
+def test_fetch_inbound_429_retries_via_get_with_retry(
+    client: RemoteAgentClient, monkeypatch
+):
+    """A 429 on the first GET should route through _get_with_retry, which
+    honours Retry-After / jittered backoff and eventually returns a 2xx.
+    """
+    # Don't actually sleep during the retry — keeps the test fast.
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    rows = [{"id": "act-after-retry", "data": {"source": "canvas_user", "text": "ok"}}]
+
+    # First call: 429. Second call (the retry): 200 + rows. _get_with_retry
+    # will see 429 and call session.get again with the rebuilt URL — both
+    # responses come from the same mocked session.get, so we use side_effect.
+    first_429 = FakeResponse(429)
+    first_429.headers = {"Retry-After": "0"}
+    second_200 = FakeResponse(200, rows)
+    client._session.get.side_effect = [first_429, second_200]
+
+    out = client.fetch_inbound(since_id="act-prev")
+
+    assert len(out) == 1
+    assert out[0].activity_id == "act-after-retry"
+    # Two GETs total: one 429, one 200.
+    assert client._session.get.call_count == 2
 
 
 # ---------------------------------------------------------------------------

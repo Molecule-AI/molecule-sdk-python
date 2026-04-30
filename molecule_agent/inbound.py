@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -253,10 +252,13 @@ class PollDelivery:
     def run_once(self, handler: MessageHandler) -> int:
         """Fetch one batch and dispatch each message to ``handler``.
 
-        Returns the number of messages dispatched. A handler exception is
-        logged but does not abort the batch — at-least-once semantics, the
-        same row may be re-delivered on the next iteration if its cursor
-        wasn't advanced.
+        Returns the number of messages dispatched. The cursor advances past
+        every dispatched row, including ones whose handler raised — a
+        poison-pill input shouldn't block the queue forever. The handler
+        is responsible for surfacing its own errors via logging or its own
+        observability. This matches Slack Events delivery and SQS DLQ
+        semantics; the platform makes no exactly-once guarantees on
+        activity poll, so handlers must be idempotent regardless.
         """
         if self._stopped:
             return 0
@@ -366,5 +368,4 @@ __all__ = [
     "MessageHandler",
     "PollDelivery",
     "PushDelivery",
-    "_parse_activity_row",
 ]
