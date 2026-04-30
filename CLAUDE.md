@@ -139,6 +139,8 @@ unless noted):
 | `POST` | `/workspaces/:id/delegate` | 30.6 | bearer + X-Workspace-ID, 300s timeout |
 | `GET` | `/workspaces/:id/plugins/:name/download` | 30.3 | bearer |
 | `POST` | `/workspaces/:id/plugins` | 30.3 | bearer |
+| `GET` | `/workspaces/:id/activity?type=a2a_receive&since_id=…` | 30.8c | bearer (poll-mode inbound) |
+| `POST` | `/workspaces/:id/notify` | 30.8c | bearer (canvas-user reply) |
 
 **Token** is cached at `~/.molecule/<workspace_id>/.auth_token` with `0600`
 permissions. On restart the client reuses the cached token — the platform
@@ -201,9 +203,20 @@ python -m molecule_agent verify-sha256 ./my-plugin-dir
   first**. Do not patch silently — the SDK is consumed across multiple
   runtime environments and silent patches can cause subtle breakage elsewhere.
 
-- `molecule_agent` does not yet bundle an inbound A2A server helper.
-  Platform-initiated calls to a remote agent without a publicly reachable
-  endpoint will not succeed. See Phase 30.8b in the platform's `PLAN.md`.
+- `molecule_agent` ships two inbound delivery paths: **push** (Phase 30.8b,
+  `A2AServer` — for agents with a publicly reachable URL) and **poll** (Phase
+  30.8c, `PollDelivery` — for agents behind NAT or without a public endpoint,
+  the typical case for hermes-self-hosted, codex, and similar OSS runtimes).
+  Both feed the same `MessageHandler` callback through
+  `RemoteAgentClient.run_agent_loop(handler)`. The reply transport
+  (`/notify` for canvas users vs `/a2a` for peer agents) is hidden behind
+  `client.reply(msg, text)`.
+
+- One-line bootstrap for poll-mode agents:
+  `python -m molecule_agent connect --platform-url … --workspace-id … --token … --handler my_module:fn`.
+  Picks `PollDelivery` automatically when `--reported-url` is empty; SIGTERM/SIGINT
+  shut the loop down cleanly. Cursor optionally persisted to `--cursor-file` so
+  restarts resume from the last-seen activity row.
 
 ---
 
