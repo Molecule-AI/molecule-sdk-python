@@ -268,6 +268,18 @@ class RemoteAgentClient:
             0700 permissions if missing.
         heartbeat_interval: Seconds between heartbeats in the run loop.
         state_poll_interval: Seconds between state polls in the run loop.
+        org_id: When set, sent as the ``X-Molecule-Org-Id`` header on every
+            request. Required against multi-tenant SaaS deployments
+            (``*.staging.moleculesai.app``, ``*.moleculesai.app``) where
+            the TenantGuard middleware uses it to pin the request to the
+            correct tenant; missing-header requests 404.
+        origin: When set (or auto-derived from ``platform_url``), sent as
+            the ``Origin`` header on every request. The SaaS edge WAF
+            silently rewrites ``/workspaces/*`` and ``/registry/*/peers``
+            to Next.js without it — empty 404, easy to misdiagnose as
+            auth. Pass an explicit string to override the auto-derived
+            value, or ``None`` to disable Origin injection entirely
+            (for self-hosted deployments without the SaaS WAF).
     """
 
     def __init__(
@@ -281,6 +293,8 @@ class RemoteAgentClient:
         state_poll_interval: float = DEFAULT_STATE_POLL_INTERVAL,
         url_cache_ttl: float = DEFAULT_URL_CACHE_TTL,
         session: requests.Session | None = None,
+        org_id: str = "",
+        origin: str | None = "",
     ) -> None:
         self.workspace_id = workspace_id
         self.platform_url = platform_url.rstrip("/")
@@ -289,6 +303,15 @@ class RemoteAgentClient:
         self.heartbeat_interval = heartbeat_interval
         self.state_poll_interval = state_poll_interval
         self.url_cache_ttl = url_cache_ttl
+        self.org_id = org_id
+        # Origin: empty string ("") means "auto-derive from platform_url"
+        # (the common case for SaaS — Origin must equal platform_url).
+        # Explicit None opts out for self-hosted deployments where the
+        # WAF doesn't rewrite. A non-empty string is used as-is.
+        if origin == "":
+            self.origin: str | None = self.platform_url
+        else:
+            self.origin = origin
         # Phase 30.6 — sibling URL cache keyed by workspace id. Values are
         # (url, expires_at_unix_seconds). Process-memory only; we re-fetch
         # on restart because agent lifetimes are short enough that
@@ -385,12 +408,39 @@ class RemoteAgentClient:
             return {}
         return {"Authorization": f"Bearer {tok}"}
 
+    def _tenant_headers(self) -> dict[str, str]:
+        """SaaS-edge headers required by TenantGuard + WAF.
+
+        Returns an empty dict on a self-hosted deployment (no ``org_id``
+        configured and ``origin`` opted out) so existing single-tenant
+        callers see no behavior change.
+        """
+        h: dict[str, str] = {}
+        if self.org_id:
+            h["X-Molecule-Org-Id"] = self.org_id
+        if self.origin:
+            h["Origin"] = self.origin
+        return h
+
+    def _request_headers(self, **extra: str) -> dict[str, str]:
+        """Auth + tenant + caller-supplied extras, merged in that order.
+
+        Caller extras win on conflict. Use this everywhere a call needs
+        Authorization — it folds in the SaaS tenant headers automatically
+        so individual call sites don't have to remember.
+        """
+        return {**self._auth_headers(), **self._tenant_headers(), **extra}
+
     def _get_with_retry(
         self,
         url: str,
         headers: dict[str, str] | None = None,
         max_retries: int = DEFAULT_GET_MAX_RETRIES,
     ) -> requests.Response:
+        # Note: callers pass an explicit headers dict that already includes
+        # the auth + tenant bundle (built via _request_headers). We do NOT
+        # re-merge tenant headers here, to preserve the contract that
+        # _get_with_retry sends exactly the headers it was given.
         """Issue a GET with automatic retry on 429 (Too Many Requests).
 
         Retries up to ``max_retries`` times, honouring the ``Retry-After``
@@ -449,6 +499,11 @@ class RemoteAgentClient:
                 "url": reported,
                 "agent_card": self.agent_card,
             },
+            # Tenant headers only — register predates the auth token.
+            # The SaaS WAF still rewrites /registry/* without Origin and
+            # TenantGuard still 404s without X-Molecule-Org-Id, so the
+            # tenant headers must be present even on the very first call.
+            headers=self._tenant_headers(),
             timeout=10.0,
         )
         resp.raise_for_status()
@@ -477,7 +532,7 @@ class RemoteAgentClient:
         """
         resp = self._get_with_retry(
             f"{self.platform_url}/workspaces/{self.workspace_id}/secrets/values",
-            headers=self._auth_headers(),
+            headers=self._request_headers(),
         )
         resp.raise_for_status()
         return resp.json() or {}
@@ -491,7 +546,7 @@ class RemoteAgentClient:
         """
         resp = self._get_with_retry(
             f"{self.platform_url}/workspaces/{self.workspace_id}/state",
-            headers=self._auth_headers(),
+            headers=self._request_headers(),
         )
         if resp.status_code == 404:
             # Platform signals hard-delete via 404 + deleted:true
@@ -522,7 +577,7 @@ class RemoteAgentClient:
         uptime = int(time.time() - self._start_time)
         resp = self._session.post(
             f"{self.platform_url}/registry/heartbeat",
-            headers=self._auth_headers(),
+            headers=self._request_headers(),
             json={
                 "workspace_id": self.workspace_id,
                 "current_task": current_task,
@@ -554,7 +609,7 @@ class RemoteAgentClient:
         resp = self._get_with_retry(
             f"{self.platform_url}/registry/{self.workspace_id}/peers",
             headers={
-                **self._auth_headers(),
+                **self._request_headers(),
                 "X-Workspace-ID": self.workspace_id,
             },
         )
@@ -608,7 +663,7 @@ class RemoteAgentClient:
         resp = self._get_with_retry(
             f"{self.platform_url}/registry/discover/{target_id}",
             headers={
-                **self._auth_headers(),
+                **self._request_headers(),
                 "X-Workspace-ID": self.workspace_id,
             },
         )
@@ -663,7 +718,7 @@ class RemoteAgentClient:
             },
         }
         headers = {
-            **self._auth_headers(),
+            **self._request_headers(),
             "X-Workspace-ID": self.workspace_id,
             "Content-Type": "application/json",
         }
@@ -699,10 +754,12 @@ class RemoteAgentClient:
         since_id: str | None = None,
         limit: int = 100,
         type: str = "a2a_receive",
+        peer_id: str | None = None,
+        before_ts: str | None = None,
     ) -> list["InboundMessage"]:
         """Fetch one batch of inbound A2A activity rows.
 
-        Hits ``GET /workspaces/:id/activity?type=…&since_id=…&limit=…``.
+        Hits ``GET /workspaces/:id/activity?type=…&since_id=…&limit=…[&peer_id=…&before_ts=…]``.
         Returns the rows newer than ``since_id`` in oldest-first order,
         parsed into :class:`~molecule_agent.inbound.InboundMessage`.
 
@@ -718,6 +775,15 @@ class RemoteAgentClient:
             type: Activity-row type filter. Default ``"a2a_receive"``;
                 pass another type to consume different streams (e.g.
                 ``"workspace_state_changed"``).
+            peer_id: Narrow to events from one specific peer workspace
+                (matches the activity row's ``source_id``). Useful for
+                building a per-peer chat history view. Server-side filter
+                landed in CP PR #2472.
+            before_ts: RFC3339 timestamp — return only rows whose ``ts``
+                is strictly less than this value. Pairs with ``since_id``
+                for paged backlog reads ("give me everything between
+                cursor X and timestamp T"). Server-side filter landed in
+                CP PR #2476.
 
         Returns:
             List of :class:`InboundMessage`, oldest first. May be empty.
@@ -735,10 +801,14 @@ class RemoteAgentClient:
         params: dict[str, str] = {"type": type, "limit": str(int(limit))}
         if since_id:
             params["since_id"] = since_id
+        if peer_id:
+            params["peer_id"] = peer_id
+        if before_ts:
+            params["before_ts"] = before_ts
         url = f"{self.platform_url}/workspaces/{self.workspace_id}/activity"
         resp = self._session.get(
             url,
-            headers=self._auth_headers(),
+            headers=self._request_headers(),
             params=params,
             timeout=15.0,
         )
@@ -754,7 +824,7 @@ class RemoteAgentClient:
             from urllib.parse import urlencode
             resp = self._get_with_retry(
                 url + "?" + urlencode(params),
-                headers=self._auth_headers(),
+                headers=self._request_headers(),
             )
         resp.raise_for_status()
 
@@ -803,7 +873,7 @@ class RemoteAgentClient:
             resp = self._session.post(
                 f"{self.platform_url}/workspaces/{self.workspace_id}/notify",
                 headers={
-                    **self._auth_headers(),
+                    **self._request_headers(),
                     "Content-Type": "application/json",
                 },
                 json={"message": text},
@@ -833,7 +903,7 @@ class RemoteAgentClient:
             resp = self._session.post(
                 f"{self.platform_url}/workspaces/{target}/a2a",
                 headers={
-                    **self._auth_headers(),
+                    **self._request_headers(),
                     "X-Source-Workspace-Id": self.workspace_id,
                     "X-Workspace-ID": self.workspace_id,
                     "Content-Type": "application/json",
@@ -989,7 +1059,7 @@ class RemoteAgentClient:
         resp = self._session.post(
             f"{self.platform_url}/workspaces/{target_id}/delegate",
             headers={
-                **self._auth_headers(),
+                **self._request_headers(),
                 "X-Workspace-ID": self.workspace_id,
                 "Content-Type": "application/json",
             },
@@ -1061,7 +1131,7 @@ class RemoteAgentClient:
         # If the cap is ever raised above ~500 MiB, switch to a temp
         # file: tarfile.open(fileobj=open(temp, "rb"), mode="r:gz").
         with self._session.get(
-            url, headers=self._auth_headers(), params=params,
+            url, headers=self._request_headers(), params=params,
             timeout=60.0,
         ) as resp:
             resp.raise_for_status()
@@ -1141,7 +1211,7 @@ class RemoteAgentClient:
                 report_source = source or f"local://{name}"
                 self._session.post(
                     f"{self.platform_url}/workspaces/{self.workspace_id}/plugins",
-                    headers=self._auth_headers(),
+                    headers=self._request_headers(),
                     json={"source": report_source},
                     timeout=10.0,
                 )

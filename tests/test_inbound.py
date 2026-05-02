@@ -153,6 +153,39 @@ def test_parse_activity_row_text_alt_key():
     assert msg.text == "alt"
 
 
+def test_parse_activity_row_carries_peer_enrichment_fields():
+    # 2026-05-02 platform push envelope adds peer_name / peer_role /
+    # agent_card_url under data. The parser surfaces them as typed fields
+    # so handlers don't have to dict-fish.
+    row = {
+        "id": "act-8",
+        "source_id": "peer-ws-99",
+        "data": {
+            "source": "peer_agent",
+            "text": "ping",
+            "peer_name": "ops-agent",
+            "peer_role": "sre",
+            "agent_card_url": "https://platform.test/registry/discover/peer-ws-99",
+        },
+    }
+    msg = _parse_activity_row(row)
+    assert msg is not None
+    assert msg.peer_name == "ops-agent"
+    assert msg.peer_role == "sre"
+    assert msg.agent_card_url == "https://platform.test/registry/discover/peer-ws-99"
+
+
+def test_parse_activity_row_missing_enrichment_fields_default_to_empty():
+    # Registry lookup may fail; the platform omits the fields rather than
+    # nulling them. Empty-string defaults keep handler code branch-free.
+    row = {"id": "act-9", "source_id": "peer-ws-99", "data": {"source": "peer_agent", "text": "ping"}}
+    msg = _parse_activity_row(row)
+    assert msg is not None
+    assert msg.peer_name == ""
+    assert msg.peer_role == ""
+    assert msg.agent_card_url == ""
+
+
 # ---------------------------------------------------------------------------
 # fetch_inbound
 # ---------------------------------------------------------------------------
@@ -183,6 +216,34 @@ def test_fetch_inbound_with_since_id_passes_cursor(client: RemoteAgentClient):
     client.fetch_inbound(since_id="act-prev")
     params = client._session.get.call_args.kwargs["params"]
     assert params["since_id"] == "act-prev"
+
+
+def test_fetch_inbound_passes_peer_id_filter(client: RemoteAgentClient):
+    # CP PR #2472 — narrow to events from one specific peer.
+    client._session.get.return_value = FakeResponse(200, [])
+    client.fetch_inbound(peer_id="peer-ws-77")
+    params = client._session.get.call_args.kwargs["params"]
+    assert params["peer_id"] == "peer-ws-77"
+
+
+def test_fetch_inbound_passes_before_ts_filter(client: RemoteAgentClient):
+    # CP PR #2476 — paged backlog: rows whose ts < before_ts.
+    client._session.get.return_value = FakeResponse(200, [])
+    client.fetch_inbound(before_ts="2026-05-01T00:00:00Z")
+    params = client._session.get.call_args.kwargs["params"]
+    assert params["before_ts"] == "2026-05-01T00:00:00Z"
+
+
+def test_fetch_inbound_omits_optional_filters_when_unset(client: RemoteAgentClient):
+    # Critical: the server treats peer_id="" / before_ts="" as a literal
+    # filter ("rows where peer_id == ''"), so we must not send empty
+    # params. Confirm absent kwargs → absent params keys.
+    client._session.get.return_value = FakeResponse(200, [])
+    client.fetch_inbound()
+    params = client._session.get.call_args.kwargs["params"]
+    assert "peer_id" not in params
+    assert "before_ts" not in params
+    assert "since_id" not in params
 
 
 def test_fetch_inbound_410_raises_cursor_lost(client: RemoteAgentClient):

@@ -75,6 +75,15 @@ class InboundMessage:
     text: str
     raw: dict[str, Any] = field(default_factory=dict)
 
+    # Enrichment fields landed on the platform push envelope on 2026-05-02
+    # (CP PRs #2472, #2476). The platform resolves these from the registry
+    # at push time; on registry-lookup failure they may be empty strings.
+    # Empty-string default keeps consumers branch-free — no key-error guards
+    # needed when the field is absent.
+    peer_name: str = ""
+    peer_role: str = ""
+    agent_card_url: str = ""
+
 
 class CursorLostError(Exception):
     """Raised when ``GET /workspaces/:id/activity`` returns 410 Gone.
@@ -134,6 +143,9 @@ def _parse_activity_row(row: dict[str, Any]) -> InboundMessage | None:
         source_id=source_id,
         text=text,
         raw=row,
+        peer_name=str(data.get("peer_name") or ""),
+        peer_role=str(data.get("peer_role") or ""),
+        agent_card_url=str(data.get("agent_card_url") or ""),
     )
 
 

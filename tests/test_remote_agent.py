@@ -1072,3 +1072,95 @@ def test_validate_manifest_accepts_absent_sha256(tmp_path: Path):
         _safe_extract_tar(tf, tmp_path)
     assert (tmp_path / "real.md").exists()
     assert not (tmp_path / "link.lnk").exists()
+
+
+# ---------------------------------------------------------------------------
+# SaaS tenant headers (org_id + Origin) — auto-injection
+# ---------------------------------------------------------------------------
+
+
+def _make_saas_client(tmp_token_dir: Path, **overrides) -> RemoteAgentClient:
+    """Build a client configured for the multi-tenant SaaS edge."""
+    from unittest.mock import MagicMock as _MM
+    return RemoteAgentClient(
+        workspace_id="ws-saas-1",
+        platform_url=overrides.pop("platform_url", "https://acme.moleculesai.app"),
+        agent_card={"name": "saas-agent"},
+        token_dir=tmp_token_dir,
+        session=_MM(),
+        **overrides,
+    )
+
+
+def test_origin_auto_derived_from_platform_url(tmp_token_dir: Path):
+    c = _make_saas_client(tmp_token_dir)
+    # Default origin == platform_url so the SaaS WAF doesn't 404 on first call.
+    assert c.origin == "https://acme.moleculesai.app"
+    assert c._tenant_headers() == {"Origin": "https://acme.moleculesai.app"}
+
+
+def test_origin_explicit_overrides_auto(tmp_token_dir: Path):
+    c = _make_saas_client(tmp_token_dir, origin="https://canvas.acme.moleculesai.app")
+    assert c.origin == "https://canvas.acme.moleculesai.app"
+    assert c._tenant_headers()["Origin"] == "https://canvas.acme.moleculesai.app"
+
+
+def test_origin_none_opts_out(tmp_token_dir: Path):
+    # Self-hosted deployments without the SaaS WAF can disable Origin entirely.
+    c = _make_saas_client(tmp_token_dir, origin=None)
+    assert c.origin is None
+    assert "Origin" not in c._tenant_headers()
+
+
+def test_org_id_injected_when_configured(tmp_token_dir: Path):
+    c = _make_saas_client(tmp_token_dir, org_id="org-uuid-123")
+    h = c._tenant_headers()
+    assert h["X-Molecule-Org-Id"] == "org-uuid-123"
+    assert h["Origin"] == "https://acme.moleculesai.app"
+
+
+def test_no_tenant_headers_when_unconfigured(tmp_token_dir: Path):
+    # Classic single-tenant path: no org_id, opt out of Origin.
+    # Existing self-hosted callers see zero behavior change.
+    c = RemoteAgentClient(
+        workspace_id="ws-self-hosted",
+        platform_url="http://localhost:8080",
+        token_dir=tmp_token_dir,
+        origin=None,
+    )
+    assert c._tenant_headers() == {}
+
+
+def test_pull_secrets_sends_tenant_headers(tmp_token_dir: Path):
+    c = _make_saas_client(tmp_token_dir, org_id="org-uuid-123")
+    c.save_token("tok")
+    c._session.get.return_value = FakeResponse(200, {})
+    c.pull_secrets()
+    sent = c._session.get.call_args.kwargs["headers"]
+    assert sent["Authorization"] == "Bearer tok"
+    assert sent["X-Molecule-Org-Id"] == "org-uuid-123"
+    assert sent["Origin"] == "https://acme.moleculesai.app"
+
+
+def test_register_sends_tenant_headers_without_auth(tmp_token_dir: Path):
+    # Register predates the auth token; tenant headers must still flow
+    # through so the SaaS WAF doesn't silently 404 the very first call.
+    c = _make_saas_client(tmp_token_dir, org_id="org-uuid-123")
+    c._session.post.return_value = FakeResponse(200, {"auth_token": "fresh"})
+    c.register()
+    sent = c._session.post.call_args.kwargs["headers"]
+    assert sent["X-Molecule-Org-Id"] == "org-uuid-123"
+    assert sent["Origin"] == "https://acme.moleculesai.app"
+    # And no Authorization on register itself.
+    assert "Authorization" not in sent
+
+
+def test_heartbeat_sends_tenant_headers(tmp_token_dir: Path):
+    c = _make_saas_client(tmp_token_dir, org_id="org-uuid-123")
+    c.save_token("tok")
+    c._session.post.return_value = FakeResponse(200, {})
+    c.heartbeat()
+    sent = c._session.post.call_args.kwargs["headers"]
+    assert sent["Authorization"] == "Bearer tok"
+    assert sent["X-Molecule-Org-Id"] == "org-uuid-123"
+    assert sent["Origin"] == "https://acme.moleculesai.app"
