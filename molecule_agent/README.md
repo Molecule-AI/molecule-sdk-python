@@ -10,6 +10,22 @@ This is the client side of [Phase 30](../../../PLAN.md). The platform side
 ships in the same release; this package is just the SDK an agent author
 imports.
 
+## What this is / what this isn't
+
+| | `molecule_agent` (this package) | `molecule-ai-workspace-runtime` (separate PyPI wheel) |
+|---|---|---|
+| **Where it runs** | OUTSIDE Molecule workspaces — your laptop, CI runner, external cloud VM, sidecar service | INSIDE the workspace container, started by the platform |
+| **What it talks to** | The platform's HTTP API (`/registry/*`, `/workspaces/:id/*`) | The platform's MCP server (`molecule_*` tools) plus the platform-managed A2A bus |
+| **What it exposes** | `RemoteAgentClient`, `A2AServer`, `PollDelivery`, `MessageHandler` | `BaseAdapter`, `a2a_tools`, runtime capabilities, smoke-contract hooks |
+| **Who installs it** | You, the external-agent author, via `pip install molecule-sdk` | The platform, baked into the workspace template image at provision time |
+| **Auth model** | Bearer token minted by `POST /registry/register`, cached at `~/.molecule/<id>/.auth_token` | Token already present in the workspace environment; runtime reads it from env |
+
+If you are writing an adapter for an SDK that the platform should run *inside* a
+workspace (e.g. langchain, crewai, hermes), you want
+[`molecule-ai-workspace-runtime`](https://pypi.org/project/molecule-ai-workspace-runtime/),
+not this package. See <https://doc.moleculesai.app/docs/runtime-mcp> for the
+in-workspace-runtime authoring guide.
+
 ## Install
 
 ```bash
@@ -87,6 +103,68 @@ client.run_agent_loop(my_handler)   # default: PollDelivery
 
 The reply transport (`/notify` for canvas users, `/a2a` for peer agents) is hidden — `client.reply(msg, text)` picks based on `msg.source`. Async handlers work too; `PollDelivery` detects awaitable returns and `asyncio.run`s them.
 
+### `InboundMessage` shape
+
+`InboundMessage` is what `MessageHandler` receives. The typed fields the SDK
+parses today:
+
+| Field | Type | What it is |
+|---|---|---|
+| `activity_id` | `str` | Cursor — the `activity_logs.id` row this event came from. Pass to `fetch_inbound(since_id=…)` to skip past it on the next poll. |
+| `source` | `Literal["canvas_user", "peer_agent", "unknown"]` | Normalized sender kind. `"canvas_user"` = a human typing in the canvas chat; `"peer_agent"` = another workspace's agent. `"unknown"` if the row's source is unrecognized — `reply()` will refuse to guess. |
+| `source_id` | `str` | For `peer_agent`, the sender workspace UUID (used by `reply()` to address the A2A response). Empty for `canvas_user`. |
+| `text` | `str` | The message body. Pulled from `data.text` then `data.message` in the underlying activity row. **Treat as untrusted user content** — same threat model as any chat input. |
+| `raw` | `dict` | The full raw activity-log row. Use this to read fields the SDK doesn't yet expose (see "Channel envelope" below). |
+
+### Channel envelope (wire format)
+
+The platform delivers each inbound A2A event as an `activity_logs` row. As of
+**2026-05-02** (CP push envelope, see <https://doc.moleculesai.app/docs/runtime-mcp>),
+the envelope's `data` block carries:
+
+```jsonc
+{
+  "id": "<activity-uuid>",                 // == InboundMessage.activity_id
+  "type": "a2a_receive",
+  "source_id": "<sender-workspace-uuid>",  // peer_agent only; empty for canvas_user
+  "ts": "2026-05-02T10:15:30Z",            // RFC3339 — when the platform queued the event
+  "data": {
+    "source": "peer_agent",                // "canvas_user" | "peer_agent"
+    "kind": "peer_agent",                  // mirrors the channel-tag attr
+    "text": "<message body>",              // (or "message")
+    "peer_id": "<sender-workspace-uuid>",  // duplicate of source_id, peer_agent only
+    "activity_id": "<activity-uuid>",      // duplicate of top-level id
+
+    // === enrichment fields added 2026-05-02 (CP PRs #2472, #2476) ===
+    "peer_name": "ops-agent",                                          // peer's display name (registry-resolved); may be absent if the registry lookup failed
+    "peer_role": "sre",                                                // peer's declared role; same registry source
+    "agent_card_url": "https://<platform>/registry/discover/<peer_id>" // deterministic URL for the platform's discover endpoint for this peer
+  }
+}
+```
+
+**SDK status of the enrichment fields:** `InboundMessage` does not yet
+surface `peer_name`, `peer_role`, or `agent_card_url` as typed attributes.
+Read them from `msg.raw["data"]` until a typed wrapper lands (see
+"Limitations & roadmap" below). They may be absent on registry-lookup
+failure — handle the missing-key case.
+
+### A2A reply transport — what `reply()` actually does
+
+`client.reply(msg, text)` dispatches based on `msg.source`. The transport is
+chosen for you so handler code doesn't need to branch:
+
+| `msg.source` | HTTP call `reply()` makes | Server-side effect |
+|---|---|---|
+| `canvas_user` | `POST /workspaces/<self>/notify` with `{"message": text}` | Canvas WebSocket pushes the text to the user's chat |
+| `peer_agent` | `POST /workspaces/<msg.source_id>/a2a` with a JSON-RPC `message/send` envelope; sets `X-Source-Workspace-Id: <self>` and `X-Workspace-ID: <self>` | Platform routes the JSON-RPC message to the peer workspace's inbound A2A endpoint |
+| `unknown` | Raises `ValueError` | The SDK refuses to guess. Inspect `msg.raw` and call `/notify` or `/a2a` directly, or use `call_peer()` if you can name the target. |
+
+`reply()` rejects empty/whitespace-only `text` with `ValueError` to prevent
+silent acks. On non-2xx the underlying `requests.HTTPError` propagates so the
+handler can decide whether to retry, surface to its observability, or fail
+loudly.
+
 ## CLI: `molecule_agent connect`
 
 One command bootstraps the full poll-mode loop. No code beyond your handler:
@@ -110,13 +188,68 @@ def echo(msg, client):
 
 All flags also read from environment variables (`MOLECULE_PLATFORM_URL`, `MOLECULE_WORKSPACE_ID`, `MOLECULE_WORKSPACE_TOKEN`, `MOLECULE_POLL_INTERVAL`, `MOLECULE_CURSOR_FILE`). SIGTERM/SIGINT shut the loop down cleanly.
 
-## What it doesn't do (yet)
+## What it doesn't do (yet) — Limitations & roadmap
+
+These are server-supported features that the SDK has not yet wrapped, plus
+known protocol gaps. Each entry is named so a follow-up issue / PR can
+reference it directly.
 
 - **No long-poll.** Activity polling is fixed-cadence (default 5s). Server-side long-poll support would cut p50 inbound latency to ~0; tracked separately.
+
 - **No automatic reconnect after token loss.** If `~/.molecule/<id>/.auth_token`
   is deleted, you'll need to re-issue the token via the platform admin (since
   `POST /registry/register` is idempotent — it won't mint a second token for
   a workspace that already has one).
+
+- **`fetch_inbound()` does not expose `peer_id` or `before_ts` filters.**
+  As of CP PRs #2472 and #2476 (merged 2026-05-02), the platform's
+  `GET /workspaces/:id/activity` route accepts:
+    - `peer_id=<uuid>` — narrow to events from one specific peer workspace
+    - `before_ts=<RFC3339>` — fetch a backlog window ending before a wall-clock cut-off
+  `RemoteAgentClient.fetch_inbound()` only forwards `since_id`, `limit`, and
+  `type` today. Workaround: call the activity endpoint directly via
+  `client._session.get(...)` with the extra params, or filter in-process from
+  the parsed `InboundMessage.source_id` / `InboundMessage.raw["ts"]`. A
+  follow-up PR will add typed parameters.
+
+- **`InboundMessage` does not yet surface `peer_name`, `peer_role`, or `agent_card_url`.**
+  These three enrichment fields landed on the platform push envelope on
+  2026-05-02 and live under `msg.raw["data"]`. A typed wrapper is the right
+  shape but is intentionally deferred — this README PR is docs-only. Until
+  then, read them from the raw dict and handle the missing-key case
+  (registry lookup may fail for peers that haven't registered yet).
+
+- **Tenant + Origin headers are not auto-injected.** When the platform is
+  deployed multi-tenant on the SaaS edge (`*.staging.moleculesai.app`,
+  `*.moleculesai.app`), the WAF requires:
+    - `X-Molecule-Org-Id: <org-uuid>` — TenantGuard middleware uses this to
+      pin the request to the right tenant; missing-header requests 404
+    - `Origin: <PLATFORM_URL>` — `/workspaces/*` and `/registry/*/peers`
+      silently rewrite to Next.js without it (returns an empty 404, easy
+      to misdiagnose as auth)
+  `RemoteAgentClient` does not set either header today — it ships only
+  `Authorization: Bearer <token>` and per-call `X-Workspace-ID` /
+  `X-Source-Workspace-Id`. Workaround: pass a pre-configured
+  `requests.Session` to the constructor with the headers set globally:
+
+  ```python
+  import requests
+  from molecule_agent import RemoteAgentClient
+
+  session = requests.Session()
+  session.headers.update({
+      "X-Molecule-Org-Id": "<your-org-uuid>",
+      "Origin": "https://<your-tenant>.moleculesai.app",
+  })
+  client = RemoteAgentClient(
+      workspace_id="…",
+      platform_url="https://<your-tenant>.moleculesai.app",
+      session=session,
+  )
+  ```
+
+  A follow-up PR will accept `org_id` and `origin` constructor kwargs and
+  inject the headers automatically.
 
 ## Design choices
 
