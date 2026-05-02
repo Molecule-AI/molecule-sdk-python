@@ -143,11 +143,18 @@ the envelope's `data` block carries:
 }
 ```
 
-**SDK status of the enrichment fields:** `InboundMessage` does not yet
-surface `peer_name`, `peer_role`, or `agent_card_url` as typed attributes.
-Read them from `msg.raw["data"]` until a typed wrapper lands (see
-"Limitations & roadmap" below). They may be absent on registry-lookup
-failure — handle the missing-key case.
+**SDK status of the enrichment fields:** `InboundMessage` surfaces
+`peer_name`, `peer_role`, and `agent_card_url` as typed string
+attributes. Each defaults to the empty string when the registry lookup
+failed at push time (or when the inbound row predates the 2026-05-02
+enrichment), so handler code can read them without key-error guards:
+
+```python
+def handler(msg, client):
+    if msg.peer_name:
+        return f"hi {msg.peer_name}, you said: {msg.text}"
+    return f"hi, you said: {msg.text}"
+```
 
 ### A2A reply transport — what `reply()` actually does
 
@@ -201,55 +208,25 @@ reference it directly.
   `POST /registry/register` is idempotent — it won't mint a second token for
   a workspace that already has one).
 
-- **`fetch_inbound()` does not expose `peer_id` or `before_ts` filters.**
-  As of CP PRs #2472 and #2476 (merged 2026-05-02), the platform's
-  `GET /workspaces/:id/activity` route accepts:
-    - `peer_id=<uuid>` — narrow to events from one specific peer workspace
-    - `before_ts=<RFC3339>` — fetch a backlog window ending before a wall-clock cut-off
-  `RemoteAgentClient.fetch_inbound()` only forwards `since_id`, `limit`, and
-  `type` today. Workaround: call the activity endpoint directly via
-  `client._session.get(...)` with the extra params, or filter in-process from
-  the parsed `InboundMessage.source_id` / `InboundMessage.raw["ts"]`. A
-  follow-up PR will add typed parameters.
-
-- **`InboundMessage` does not yet surface `peer_name`, `peer_role`, or `agent_card_url`.**
-  These three enrichment fields landed on the platform push envelope on
-  2026-05-02 and live under `msg.raw["data"]`. A typed wrapper is the right
-  shape but is intentionally deferred — this README PR is docs-only. Until
-  then, read them from the raw dict and handle the missing-key case
-  (registry lookup may fail for peers that haven't registered yet).
-
-- **Tenant + Origin headers are not auto-injected.** When the platform is
-  deployed multi-tenant on the SaaS edge (`*.staging.moleculesai.app`,
-  `*.moleculesai.app`), the WAF requires:
-    - `X-Molecule-Org-Id: <org-uuid>` — TenantGuard middleware uses this to
-      pin the request to the right tenant; missing-header requests 404
-    - `Origin: <PLATFORM_URL>` — `/workspaces/*` and `/registry/*/peers`
-      silently rewrite to Next.js without it (returns an empty 404, easy
-      to misdiagnose as auth)
-  `RemoteAgentClient` does not set either header today — it ships only
-  `Authorization: Bearer <token>` and per-call `X-Workspace-ID` /
-  `X-Source-Workspace-Id`. Workaround: pass a pre-configured
-  `requests.Session` to the constructor with the headers set globally:
+- **SaaS multi-tenant headers are auto-injected.** On the multi-tenant SaaS
+  edge (`*.staging.moleculesai.app`, `*.moleculesai.app`), the WAF requires
+  `X-Molecule-Org-Id` (TenantGuard) and `Origin` (path-rewrite gate).
+  `RemoteAgentClient` accepts both as constructor kwargs:
 
   ```python
-  import requests
-  from molecule_agent import RemoteAgentClient
-
-  session = requests.Session()
-  session.headers.update({
-      "X-Molecule-Org-Id": "<your-org-uuid>",
-      "Origin": "https://<your-tenant>.moleculesai.app",
-  })
   client = RemoteAgentClient(
       workspace_id="…",
-      platform_url="https://<your-tenant>.moleculesai.app",
-      session=session,
+      platform_url="https://acme.moleculesai.app",
+      org_id="<your-org-uuid>",
+      # origin defaults to platform_url; pass origin=None to opt out
+      # on a self-hosted deployment.
   )
   ```
 
-  A follow-up PR will accept `org_id` and `origin` constructor kwargs and
-  inject the headers automatically.
+  Both headers are merged into every request (including `register()`,
+  which predates the auth token). For self-hosted single-tenant
+  deployments, leave `org_id` empty and pass `origin=None` to revert
+  to the classic auth-only header set.
 
 ## Design choices
 
