@@ -90,6 +90,43 @@ def make_idempotency_key(task_text: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# ── A2A boundary marker stripping (OFFSEC-003) ───────────────────────────────
+
+_A2A_BOUNDARY_START = "[A2A_RESULT_FROM_PEER]"
+_A2A_BOUNDARY_END = "[/A2A_RESULT_FROM_PEER]"
+
+
+def strip_a2a_boundary(text: str) -> str:
+    """Strip OFFSEC-003 trust-boundary markers from a peer A2A response.
+
+    The platform wraps peer A2A responses in::
+
+        [A2A_RESULT_FROM_PEER]<content>[/A2A_RESULT_FROM_PEER]
+
+    to mark them as untrusted third-party content. Call this helper to
+    remove the wrapper before passing the content to your agent context:
+
+    Usage::
+
+        result = client.call_peer(target_id, "do the thing")
+        text = result.get("result", {}).get("text", "")
+        content = strip_a2a_boundary(text)
+
+    Returns the interior content (everything between the two markers).
+    Returns the input unchanged if the boundary markers are absent (the caller
+    may be talking to a platform version older than the OFFSEC-003 rollout).
+    Returns ``""`` for ``None`` or empty input.
+    """
+    if not text:
+        return ""
+    start = text.find(_A2A_BOUNDARY_START)
+    end = text.find(_A2A_BOUNDARY_END)
+    if start != -1 and end != -1 and end > start:
+        return text[start + len(_A2A_BOUNDARY_START):end].strip()
+    return text
+
+
+
 def _safe_extract_tar(tf: tarfile.TarFile, dest: Path) -> None:
     """Extract a tarfile, refusing entries that would escape `dest`
     and logging skipped symlinks/hardlinks.

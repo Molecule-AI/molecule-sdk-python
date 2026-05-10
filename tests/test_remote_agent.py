@@ -709,7 +709,7 @@ def test_install_plugin_404_raises_with_useful_url(client: RemoteAgentClient):
 
 import hashlib
 
-from molecule_agent.client import make_idempotency_key
+from molecule_agent.client import make_idempotency_key, strip_a2a_boundary
 
 
 def test_delegate_posts_task_and_idempotency_key(client: RemoteAgentClient):
@@ -881,6 +881,55 @@ def test_make_idempotency_key_deterministic():
     a = make_idempotency_key("same task")
     b = make_idempotency_key("same task")
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# strip_a2a_boundary — OFFSEC-003 trust-boundary marker stripping
+# ---------------------------------------------------------------------------
+
+
+def test_strip_a2a_boundary_basic():
+    """Interior text between the two markers is returned."""
+    wrapped = "[A2A_RESULT_FROM_PEER]hello world[/A2A_RESULT_FROM_PEER]"
+    assert strip_a2a_boundary(wrapped) == "hello world"
+
+
+def test_strip_a2a_boundary_strips_whitespace_edges():
+    """Trailing/leading whitespace inside the boundary is stripped."""
+    wrapped = "[A2A_RESULT_FROM_PEER]  peer reply  [/A2A_RESULT_FROM_PEER]"
+    assert strip_a2a_boundary(wrapped) == "peer reply"
+
+
+def test_strip_a2a_boundary_no_markers_returns_unchanged():
+    """Without both markers present the input passes through unchanged."""
+    assert strip_a2a_boundary("plain text with no markers") == "plain text with no markers"
+
+
+def test_strip_a2a_boundary_only_start_returns_unchanged():
+    """Only a start marker — no-op to stay safe during mid-rollout."""
+    assert strip_a2a_boundary("[A2A_RESULT_FROM_PEER]unclosed") == "[A2A_RESULT_FROM_PEER]unclosed"
+
+
+def test_strip_a2a_boundary_only_end_returns_unchanged():
+    """Only an end marker — no-op."""
+    assert strip_a2a_boundary("[/A2A_RESULT_FROM_PEER]no start") == "[/A2A_RESULT_FROM_PEER]no start"
+
+
+def test_strip_a2a_boundary_empty_returns_empty():
+    assert strip_a2a_boundary("") == ""
+    assert strip_a2a_boundary(None) == ""  # type: ignore[arg-type]
+
+
+def test_strip_a2a_boundary_end_before_start_returns_unchanged():
+    """If end marker appears before start, treat as no-op."""
+    text = "[/A2A_RESULT_FROM_PEER]X[A2A_RESULT_FROM_PEER]"
+    assert strip_a2a_boundary(text) == text
+
+
+def test_strip_a2a_boundary_multiline_content():
+    """Multiline interior content is preserved (stripped at edges only)."""
+    wrapped = "[A2A_RESULT_FROM_PEER]\n  step one\n  step two\n[/A2A_RESULT_FROM_PEER]"
+    assert strip_a2a_boundary(wrapped) == "step one\n  step two"
 
 
 # ---------------------------------------------------------------------------
