@@ -39,6 +39,7 @@ from .client import (
     PeerInfo,
     RemoteAgentClient,
     WorkspaceState,
+    strip_a2a_boundary,
     verify_plugin_sha256,
 )
 from .inbound import (
@@ -71,6 +72,7 @@ __all__ = [
     "DEFAULT_POLL_INTERVAL",
     "compute_plugin_sha256",
     "verify_plugin_sha256",
+    "strip_a2a_boundary",
     "__version__",
 ]
 __version__ = "0.1.0"

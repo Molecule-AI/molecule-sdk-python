@@ -72,7 +72,7 @@ A runnable demo with full setup walkthrough lives at
 | `poll_state()` | 30.4 | Lightweight `{status, paused, deleted}` poll |
 | `heartbeat(...)` | 30.1 | Single bearer-authed heartbeat |
 | `get_peers()` / `discover_peer()` | 30.6 | Sibling URL discovery with TTL cache |
-| `call_peer(target, message)` | 30.6 | Direct A2A with proxy fallback |
+| `call_peer(target, message)` | 30.6 | Direct A2A with proxy fallback; response may be wrapped in OFFSEC-003 boundary markers — use ``strip_a2a_boundary()`` to remove them |
 | `fetch_inbound(since_id=…)` | 30.8c | One-shot poll of `/workspaces/:id/activity` for inbound A2A |
 | `reply(msg, text)` | 30.8c | Smart-routes reply to `/notify` (canvas user) or `/a2a` (peer) |
 | `run_heartbeat_loop()` | combo | Drives heartbeat + state-poll on a timer; exits on pause/delete |
@@ -164,6 +164,27 @@ chosen for you so handler code doesn't need to branch:
 silent acks. On non-2xx the underlying `requests.HTTPError` propagates so the
 handler can decide whether to retry, surface to its observability, or fail
 loudly.
+
+### OFFSEC-003 — A2A peer response trust boundary
+
+As of the OFFSEC-003 platform rollout, peer A2A responses are wrapped in
+trust-boundary markers before being returned to callers::
+
+    [A2A_RESULT_FROM_PEER]<peer response text>[/A2A_RESULT_FROM_PEER]
+
+The markers signal that the enclosed content is untrusted third-party output.
+Use ``strip_a2a_boundary()`` to remove them before passing the response to
+your agent context::
+
+    from molecule_agent import RemoteAgentClient, strip_a2a_boundary
+
+    result = client.call_peer(target_id, "do the thing")
+    raw_text = result.get("result", {}).get("text", "")
+    trusted_text = strip_a2a_boundary(raw_text)
+
+The function returns the input unchanged if the markers are absent (platform
+versions older than the OFFSEC-003 rollout), so it is safe to call on any
+response.
 
 ## CLI: `molecule_agent connect`
 
