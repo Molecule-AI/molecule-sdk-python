@@ -699,10 +699,12 @@ class RemoteAgentClient:
         since_id: str | None = None,
         limit: int = 100,
         type: str = "a2a_receive",
+        peer_id: str | None = None,
+        before_ts: str | None = None,
     ) -> list["InboundMessage"]:
         """Fetch one batch of inbound A2A activity rows.
 
-        Hits ``GET /workspaces/:id/activity?type=…&since_id=…&limit=…``.
+        Hits ``GET /workspaces/:id/activity?type=…&since_id=…&peer_id=…&before_ts=…&limit=…``.
         Returns the rows newer than ``since_id`` in oldest-first order,
         parsed into :class:`~molecule_agent.inbound.InboundMessage`.
 
@@ -718,6 +720,13 @@ class RemoteAgentClient:
             type: Activity-row type filter. Default ``"a2a_receive"``;
                 pass another type to consume different streams (e.g.
                 ``"workspace_state_changed"``).
+            peer_id: Narrow to events sourced from a specific peer workspace.
+                Pass a workspace UUID to receive only A2A messages from that
+                peer. ``None`` (default) accepts messages from any source.
+            before_ts: RFC3339 timestamp — only rows older than this cutoff
+                are returned. Use to fetch a historical backlog window (e.g.
+                replaying missed messages after a restart). ``None`` means
+                no upper-bound cutoff; the server returns the most recent rows.
 
         Returns:
             List of :class:`InboundMessage`, oldest first. May be empty.
@@ -735,6 +744,10 @@ class RemoteAgentClient:
         params: dict[str, str] = {"type": type, "limit": str(int(limit))}
         if since_id:
             params["since_id"] = since_id
+        if peer_id:
+            params["peer_id"] = peer_id
+        if before_ts:
+            params["before_ts"] = before_ts
         url = f"{self.platform_url}/workspaces/{self.workspace_id}/activity"
         resp = self._session.get(
             url,

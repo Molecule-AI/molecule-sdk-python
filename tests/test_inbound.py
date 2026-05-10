@@ -327,6 +327,61 @@ def test_fetch_inbound_429_retries_via_get_with_retry(
     assert client._session.get.call_count == 2
 
 
+def test_fetch_inbound_peer_id_filter():
+    """peer_id param is forwarded to the GET as a query parameter."""
+    session = MagicMock()
+    rows = [{"id": "act-peer", "source_id": "peer-ops", "data": {"source": "peer_agent", "text": "hi"}}]
+    session.get.return_value = FakeResponse(200, rows)
+    from molecule_agent import RemoteAgentClient
+    client = RemoteAgentClient(
+        workspace_id="ws-abc",
+        platform_url="http://platform.test",
+        agent_card={"name": "t"},
+        session=session,
+    )
+    client.save_token("tok")
+    client.fetch_inbound(peer_id="peer-ops")
+    params = session.get.call_args.kwargs["params"]
+    assert params["peer_id"] == "peer-ops"
+
+
+def test_fetch_inbound_before_ts_filter():
+    """before_ts param is forwarded to the GET as a query parameter."""
+    session = MagicMock()
+    rows = [{"id": "act-old", "data": {"source": "canvas_user", "text": "hi"}}]
+    session.get.return_value = FakeResponse(200, rows)
+    from molecule_agent import RemoteAgentClient
+    client = RemoteAgentClient(
+        workspace_id="ws-abc",
+        platform_url="http://platform.test",
+        agent_card={"name": "t"},
+        session=session,
+    )
+    client.save_token("tok")
+    client.fetch_inbound(before_ts="2026-05-01T00:00:00Z")
+    params = session.get.call_args.kwargs["params"]
+    assert params["before_ts"] == "2026-05-01T00:00:00Z"
+
+
+def test_fetch_inbound_combined_filters():
+    """peer_id and before_ts can be used together."""
+    session = MagicMock()
+    rows = [{"id": "act-combo", "source_id": "peer-x", "data": {"source": "peer_agent", "text": "combo"}}]
+    session.get.return_value = FakeResponse(200, rows)
+    from molecule_agent import RemoteAgentClient
+    client = RemoteAgentClient(
+        workspace_id="ws-abc",
+        platform_url="http://platform.test",
+        agent_card={"name": "t"},
+        session=session,
+    )
+    client.save_token("tok")
+    client.fetch_inbound(peer_id="peer-x", before_ts="2026-05-09T12:00:00Z")
+    params = session.get.call_args.kwargs["params"]
+    assert params["peer_id"] == "peer-x"
+    assert params["before_ts"] == "2026-05-09T12:00:00Z"
+
+
 # ---------------------------------------------------------------------------
 # reply()
 # ---------------------------------------------------------------------------
