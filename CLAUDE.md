@@ -26,7 +26,7 @@ Both packages are published together as `molecule-ai-sdk` on PyPI (`setuptools`,
 # Install in dev mode
 pip install -e .
 
-# Run the full suite
+# Run the full suite (requires test extras: pip install -e ".[test]")
 pytest
 
 # Run only molecule_agent tests (remote-agent client)
