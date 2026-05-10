@@ -67,6 +67,12 @@ class InboundMessage:
     * ``unknown`` — the activity row didn't carry a recognizable source.
       :py:meth:`RemoteAgentClient.reply` raises ``ValueError`` rather than
       guess.
+
+    ``peer_name``, ``peer_role``, and ``agent_card_url`` are enrichment fields
+    added to the channel envelope on 2026-05-02 (CP PRs #2472, #2476). They
+    are resolved from the platform's registry at delivery time and may be absent
+    if the registry lookup failed or the sender hasn't registered yet. Always
+    check for absence rather than assuming they are populated.
     """
 
     activity_id: str
@@ -74,6 +80,12 @@ class InboundMessage:
     source_id: str
     text: str
     raw: dict[str, Any] = field(default_factory=dict)
+    # Enrichment fields — populated from row["data"]["peer_name"],
+    # row["data"]["peer_role"], row["data"]["agent_card_url"].
+    # May be empty strings if the registry lookup failed.
+    peer_name: str = ""
+    peer_role: str = ""
+    agent_card_url: str = ""
 
 
 class CursorLostError(Exception):
@@ -134,6 +146,9 @@ def _parse_activity_row(row: dict[str, Any]) -> InboundMessage | None:
         source_id=source_id,
         text=text,
         raw=row,
+        peer_name=str(data.get("peer_name") or ""),
+        peer_role=str(data.get("peer_role") or ""),
+        agent_card_url=str(data.get("agent_card_url") or ""),
     )
 
 
