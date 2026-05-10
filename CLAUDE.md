@@ -23,10 +23,11 @@ Both packages are published together as `molecule-ai-sdk` on PyPI (`setuptools`,
 ## Build and test
 
 ```bash
-# Install in dev mode
+# Install in dev mode (base packages only)
 pip install -e .
 
-# Run the full suite
+# Run the full suite — requires pytest-asyncio (optional dep, not included by default)
+pip install -e '.[test]'
 pytest
 
 # Run only molecule_agent tests (remote-agent client)
