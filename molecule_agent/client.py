@@ -268,6 +268,13 @@ class RemoteAgentClient:
             0700 permissions if missing.
         heartbeat_interval: Seconds between heartbeats in the run loop.
         state_poll_interval: Seconds between state polls in the run loop.
+        org_id: Optional tenant UUID for multi-tenant SaaS deployments
+            (``*.moleculesai.app``). When set the client sends
+            ``X-Molecule-Org-Id: <org_id>`` on every request so the WAF
+            can route to the correct tenant.
+        origin: Optional origin string for multi-tenant SaaS deployments.
+            When set the client sends ``Origin: <origin>`` on every
+            request, preventing silent Next.js rewrites on SaaS edges.
     """
 
     def __init__(
@@ -281,6 +288,8 @@ class RemoteAgentClient:
         state_poll_interval: float = DEFAULT_STATE_POLL_INTERVAL,
         url_cache_ttl: float = DEFAULT_URL_CACHE_TTL,
         session: requests.Session | None = None,
+        org_id: str = "",
+        origin: str = "",
     ) -> None:
         self.workspace_id = workspace_id
         self.platform_url = platform_url.rstrip("/")
@@ -289,6 +298,8 @@ class RemoteAgentClient:
         self.heartbeat_interval = heartbeat_interval
         self.state_poll_interval = state_poll_interval
         self.url_cache_ttl = url_cache_ttl
+        self._org_id = org_id
+        self._origin = origin
         # Phase 30.6 — sibling URL cache keyed by workspace id. Values are
         # (url, expires_at_unix_seconds). Process-memory only; we re-fetch
         # on restart because agent lifetimes are short enough that
@@ -381,9 +392,14 @@ class RemoteAgentClient:
 
     def _auth_headers(self) -> dict[str, str]:
         tok = self.load_token()
-        if not tok:
-            return {}
-        return {"Authorization": f"Bearer {tok}"}
+        headers: dict[str, str] = {}
+        if tok:
+            headers["Authorization"] = f"Bearer {tok}"
+        if self._org_id:
+            headers["X-Molecule-Org-Id"] = self._org_id
+        if self._origin:
+            headers["Origin"] = self._origin
+        return headers
 
     def _get_with_retry(
         self,
