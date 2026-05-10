@@ -219,29 +219,23 @@ reference it directly.
     - `Origin: <PLATFORM_URL>` — `/workspaces/*` and `/registry/*/peers`
       silently rewrite to Next.js without it (returns an empty 404, easy
       to misdiagnose as auth)
-  `RemoteAgentClient` does not set either header today — it ships only
-  `Authorization: Bearer <token>` and per-call `X-Workspace-ID` /
-  `X-Source-Workspace-Id`. Workaround: pass a pre-configured
-  `requests.Session` to the constructor with the headers set globally:
+  A follow-up PR will accept `org_id` and `origin` constructor kwargs and
+  inject the headers automatically.
+
+- **Tenant + Origin headers (resolved).**
+  `RemoteAgentClient` now accepts `org_id` and `origin` constructor kwargs and
+  injects them automatically on every request:
 
   ```python
-  import requests
   from molecule_agent import RemoteAgentClient
 
-  session = requests.Session()
-  session.headers.update({
-      "X-Molecule-Org-Id": "<your-org-uuid>",
-      "Origin": "https://<your-tenant>.moleculesai.app",
-  })
   client = RemoteAgentClient(
       workspace_id="…",
       platform_url="https://<your-tenant>.moleculesai.app",
-      session=session,
+      org_id="<your-org-uuid>",          # sets X-Molecule-Org-Id
+      origin="https://<your-tenant>.moleculesai.app",  # sets Origin
   )
   ```
-
-  A follow-up PR will accept `org_id` and `origin` constructor kwargs and
-  inject the headers automatically.
 
 ## Design choices
 

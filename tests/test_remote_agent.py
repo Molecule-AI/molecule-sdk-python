@@ -750,6 +750,78 @@ def test_delegate_sends_bearer_and_workspace_headers(client: RemoteAgentClient):
     assert kwargs["headers"]["X-Workspace-ID"] == "ws-abc-123"
 
 
+def test_auth_headers_injects_org_id_and_origin():
+    """org_id and origin kwargs are injected into every request headers."""
+    session = MagicMock()
+    session.post.return_value = FakeResponse(200, {})
+    client = RemoteAgentClient(
+        workspace_id="ws-test",
+        platform_url="https://platform.example.com",
+        org_id="org-uuid-123",
+        origin="https://tenant.moleculesai.app",
+        session=session,
+    )
+    client.save_token("tok")
+    client.delegate(task="x", target_id="peer")
+    hdrs = session.post.call_args[1]["headers"]
+    assert hdrs["Authorization"] == "Bearer tok"
+    assert hdrs["X-Molecule-Org-Id"] == "org-uuid-123"
+    assert hdrs["Origin"] == "https://tenant.moleculesai.app"
+
+
+def test_auth_headers_org_id_only():
+    """origin can be omitted when only org_id is needed."""
+    session = MagicMock()
+    session.post.return_value = FakeResponse(200, {})
+    client = RemoteAgentClient(
+        workspace_id="ws-test",
+        platform_url="https://platform.example.com",
+        org_id="org-uuid-456",
+        session=session,
+    )
+    client.save_token("tok")
+    client.poll_state()
+    hdrs = session.get.call_args[1]["headers"]
+    assert hdrs["Authorization"] == "Bearer tok"
+    assert hdrs["X-Molecule-Org-Id"] == "org-uuid-456"
+    assert "Origin" not in hdrs
+
+
+def test_auth_headers_origin_only():
+    """org_id can be omitted when only origin is needed."""
+    session = MagicMock()
+    session.post.return_value = FakeResponse(200, {})
+    client = RemoteAgentClient(
+        workspace_id="ws-test",
+        platform_url="https://platform.example.com",
+        origin="https://other-tenant.moleculesai.app",
+        session=session,
+    )
+    client.save_token("tok")
+    client.poll_state()
+    hdrs = session.get.call_args[1]["headers"]
+    assert hdrs["Authorization"] == "Bearer tok"
+    assert "X-Molecule-Org-Id" not in hdrs
+    assert hdrs["Origin"] == "https://other-tenant.moleculesai.app"
+
+
+def test_auth_headers_no_extra_when_unset():
+    """When neither org_id nor origin is set, headers contain only auth."""
+    session = MagicMock()
+    session.post.return_value = FakeResponse(200, {})
+    client = RemoteAgentClient(
+        workspace_id="ws-test",
+        platform_url="https://platform.example.com",
+        session=session,
+    )
+    client.save_token("tok")
+    client.poll_state()
+    hdrs = session.get.call_args[1]["headers"]
+    assert hdrs["Authorization"] == "Bearer tok"
+    assert "X-Molecule-Org-Id" not in hdrs
+    assert "Origin" not in hdrs
+
+
 def test_delegate_raises_on_http_error(client: RemoteAgentClient):
     client.save_token("tok")
     client._session.post.return_value = FakeResponse(500, {"error": "boom"})
