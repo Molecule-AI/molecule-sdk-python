@@ -28,27 +28,43 @@ Format per entry:
 
 ## KI-001 — RemoteAgentClient does not implement inbound A2A server
 
-**File:** `molecule_agent/client.py`  
-**Status:** Known limitation; not yet implemented  
+**File:** `molecule_agent/client.py`, `molecule_agent/a2a_server.py`, `molecule_agent/inbound.py`  
+**Status:** ✅ Resolved  
 **Severity:** Medium  
 **Platform phase:** Phase 30.8b
 
-### Symptom
-`RemoteAgentClient` can call other workspaces via A2A (outbound), but cannot
-receive inbound A2A calls. Any workspace that tries to delegate to or message
-this agent will get a connection refused or timeout.
+### Resolution
+The SDK now ships two inbound delivery paths:
 
-### Impact
-Agents running outside the platform's Docker network via `molecule_agent` are
-one-directional. Platform agents cannot push work to them — the remote agent
-must poll or be provisioned with a publicly reachable webhook endpoint.
+**Push mode (`A2AServer`)** — `molecule_agent.a2a_server.A2AServer` exposes an HTTP
+server with a `POST /a2a/inbound` endpoint. It runs in a background daemon thread
+alongside the client's heartbeat loop. Use with `PushDelivery` from `inbound.py`:
 
-### Suggested fix
-Add an `A2AServerMixin` class that exposes a `FastAPI` or `flask` route
-(`POST /a2a/inbound`) and runs in a background thread alongside the client's
-heartbeat loop. Register the inbound URL with the platform via the
-`/registry/discover` update endpoint when the server starts. See Phase 30.8b
-in the platform `PLAN.md`.
+```python
+from molecule_agent import RemoteAgentClient, A2AServer
+from molecule_agent.inbound import PushDelivery
+
+server = A2AServer(agent_id=workspace_id, inbound_url="https://...", message_handler=my_handler)
+server.start_in_background()
+client = RemoteAgentClient(workspace_id=workspace_id, platform_url=...)
+client.reported_url = server.inbound_url  # register with this URL
+client.register()
+# Pass PushDelivery so run_agent_loop doesn't also poll
+client.run_agent_loop(handler=my_handler, delivery=PushDelivery(client, server))
+```
+
+**Poll mode (`PollDelivery`)** — for agents behind NAT or without a public endpoint,
+the SDK's `PollDelivery` polls `GET /workspaces/:id/activity` on a configurable
+interval (default 5s). Both paths feed the same `MessageHandler` callback.
+`run_agent_loop` picks `PollDelivery` automatically when no explicit delivery is passed.
+
+### Files added
+- `molecule_agent/a2a_server.py` — `A2AServer` class; `HTTPServer` + `_A2AHandler`
+  running in a daemon thread; handles `POST /a2a/inbound`, async/sync handlers,
+  graceful stop.
+- `molecule_agent/inbound.py` — `InboundDelivery` protocol, `PollDelivery`,
+  `PushDelivery` (wraps `A2AServer`), `InboundMessage`, `MessageHandler`.
+- `RemoteAgentClient.run_agent_loop` updated to accept any `InboundDelivery`.
 
 ---
 

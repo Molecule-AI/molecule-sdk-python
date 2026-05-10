@@ -153,6 +153,83 @@ def test_parse_activity_row_text_alt_key():
     assert msg.text == "alt"
 
 
+def test_parse_activity_row_enrichment_fields():
+    """peer_name, peer_role, agent_card_url are extracted from row["data"]."""
+    row = {
+        "id": "act-enriched",
+        "source_id": "peer-ops-01",
+        "data": {
+            "source": "peer_agent",
+            "text": "status report",
+            "peer_name": "ops-agent",
+            "peer_role": "sre",
+            "agent_card_url": "https://platform.example/registry/discover/peer-ops-01",
+        },
+    }
+    msg = _parse_activity_row(row)
+    assert msg is not None
+    assert msg.peer_name == "ops-agent"
+    assert msg.peer_role == "sre"
+    assert msg.agent_card_url == "https://platform.example/registry/discover/peer-ops-01"
+
+
+def test_parse_activity_row_enrichment_fields_absent():
+    """When enrichment fields are absent, InboundMessage fields default to ""."""
+    row = {
+        "id": "act-no-enrich",
+        "source_id": "peer-x",
+        "data": {"source": "peer_agent", "text": "hello"},
+        # no peer_name, peer_role, agent_card_url
+    }
+    msg = _parse_activity_row(row)
+    assert msg is not None
+    assert msg.peer_name == ""
+    assert msg.peer_role == ""
+    assert msg.agent_card_url == ""
+
+
+def test_parse_activity_row_enrichment_fields_null_becomes_empty():
+    """null values in enrichment fields become "" (not the string "None")."""
+    row = {
+        "id": "act-null-enrich",
+        "source_id": "peer-y",
+        "data": {
+            "source": "peer_agent",
+            "text": "ping",
+            "peer_name": None,
+            "peer_role": None,
+            "agent_card_url": None,
+        },
+    }
+    msg = _parse_activity_row(row)
+    assert msg is not None
+    assert msg.peer_name == ""
+    assert msg.peer_role == ""
+    assert msg.agent_card_url == ""
+
+
+def test_parse_activity_row_enrichment_in_canvas_user_row():
+    """Enrichment fields are parsed even when source is canvas_user (edge case
+    where the platform enriches the row even for user-sourced messages)."""
+    row = {
+        "id": "act-user-enrich",
+        "source_id": "user",
+        "data": {
+            "source": "canvas_user",
+            "text": "hi",
+            "peer_name": "someone",
+            "peer_role": "human",
+            "agent_card_url": "https://platform.example/registry/discover/user-uuid",
+        },
+    }
+    msg = _parse_activity_row(row)
+    assert msg is not None
+    assert msg.source == "canvas_user"
+    assert msg.peer_name == "someone"
+    assert msg.peer_role == "human"
+    assert msg.agent_card_url == "https://platform.example/registry/discover/user-uuid"
+
+
 # ---------------------------------------------------------------------------
 # fetch_inbound
 # ---------------------------------------------------------------------------
