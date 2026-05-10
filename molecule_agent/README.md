@@ -201,23 +201,15 @@ reference it directly.
   `POST /registry/register` is idempotent — it won't mint a second token for
   a workspace that already has one).
 
-- **`fetch_inbound()` does not expose `peer_id` or `before_ts` filters.**
-  As of CP PRs #2472 and #2476 (merged 2026-05-02), the platform's
-  `GET /workspaces/:id/activity` route accepts:
-    - `peer_id=<uuid>` — narrow to events from one specific peer workspace
-    - `before_ts=<RFC3339>` — fetch a backlog window ending before a wall-clock cut-off
-  `RemoteAgentClient.fetch_inbound()` only forwards `since_id`, `limit`, and
-  `type` today. Workaround: call the activity endpoint directly via
-  `client._session.get(...)` with the extra params, or filter in-process from
-  the parsed `InboundMessage.source_id` / `InboundMessage.raw["ts"]`. A
-  follow-up PR will add typed parameters.
+- **`fetch_inbound()` `peer_id` and `before_ts` filters (resolved).**
+  `RemoteAgentClient.fetch_inbound()` now accepts `peer_id` (narrow to events
+  from a specific peer workspace) and `before_ts` (RFC3339 cutoff for backlog
+  replay) as optional parameters. Both are forwarded to the activity endpoint.
 
-- **`InboundMessage` does not yet surface `peer_name`, `peer_role`, or `agent_card_url`.**
-  These three enrichment fields landed on the platform push envelope on
-  2026-05-02 and live under `msg.raw["data"]`. A typed wrapper is the right
-  shape but is intentionally deferred — this README PR is docs-only. Until
-  then, read them from the raw dict and handle the missing-key case
-  (registry lookup may fail for peers that haven't registered yet).
+- **`InboundMessage` peer enrichment fields (resolved).**
+  `InboundMessage` now exposes `peer_name`, `peer_role`, and `agent_card_url`
+  as typed string attributes (default ``""`` when absent). The `raw` dict
+  remains available for any future envelope fields not yet wrapped.
 
 - **Tenant + Origin headers are not auto-injected.** When the platform is
   deployed multi-tenant on the SaaS edge (`*.staging.moleculesai.app`,
