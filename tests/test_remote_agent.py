@@ -335,6 +335,66 @@ def test_run_loop_task_supplier_reported(client: RemoteAgentClient, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
+# run_heartbeat_loop — stop_event (KI-009)
+# ---------------------------------------------------------------------------
+
+
+def test_run_loop_exits_on_stop_event(client: RemoteAgentClient, monkeypatch):
+    """stop_event.set() before calling the loop causes immediate 'stopped' exit,
+    before the first heartbeat is sent."""
+    import threading
+    import molecule_agent.client as mod
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+    client.save_token("t")
+    client._session.post.return_value = FakeResponse(200, {"status": "ok"})
+    client._session.get.return_value = FakeResponse(
+        200, {"status": "online", "paused": False, "deleted": False}
+    )
+
+    stop = threading.Event()
+    stop.set()  # signal stop BEFORE entering the loop
+    terminal = client.run_heartbeat_loop(max_iterations=999, stop_event=stop)
+
+    assert terminal == "stopped"
+    # Zero heartbeats sent — stop_event fired before the first iteration body
+    assert client._session.post.call_count == 0
+
+
+def test_run_loop_respects_stop_event_between_iterations(
+    client: RemoteAgentClient, monkeypatch
+):
+    """stop_event.set() mid-run causes exit after the current iteration finishes."""
+    import threading
+    import molecule_agent.client as mod
+
+    # Don't stub sleep — we need the event to fire *between* iterations
+    call_count = [0]
+
+    def fake_sleep(s):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            stop.set()  # signal stop after the second iteration
+        # otherwise no-op so the test doesn't wait
+
+    monkeypatch.setattr(mod.time, "sleep", fake_sleep)
+
+    client.save_token("t")
+    client._session.post.return_value = FakeResponse(200, {"status": "ok"})
+    client._session.get.return_value = FakeResponse(
+        200, {"status": "online", "paused": False, "deleted": False}
+    )
+
+    stop = threading.Event()
+    terminal = client.run_heartbeat_loop(max_iterations=999, stop_event=stop)
+
+    assert terminal == "stopped"
+    # Two full iterations completed before stop was honoured
+    assert client._session.post.call_count == 2
+    assert client._session.get.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # WorkspaceState dataclass
 # ---------------------------------------------------------------------------
 

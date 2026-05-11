@@ -770,3 +770,29 @@ def test_run_agent_loop_swallows_task_supplier_exception(
     hb_kwargs = client.heartbeat.call_args.kwargs
     assert hb_kwargs["current_task"] == ""
     assert hb_kwargs["active_tasks"] == 0
+
+
+# ---------------------------------------------------------------------------
+# run_agent_loop — stop_event (KI-009)
+# ---------------------------------------------------------------------------
+
+
+def test_run_agent_loop_exits_on_stop_event(client: RemoteAgentClient, monkeypatch):
+    """stop_event.set() before calling the loop causes immediate 'stopped' exit."""
+    import threading
+    import molecule_agent.client as mod
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+    client.save_token("t")
+    client.heartbeat = MagicMock()  # avoid actual HTTP calls
+    client.poll_state = MagicMock(return_value=None)
+
+    stop = threading.Event()
+    stop.set()  # signal stop BEFORE entering the loop
+    terminal = client.run_agent_loop(
+        lambda *_: None, max_iterations=999, stop_event=stop
+    )
+
+    assert terminal == "stopped"
+    # No heartbeat attempted — stop_event fired before the first iteration
+    assert client.heartbeat.call_count == 0

@@ -27,6 +27,7 @@ import os
 import random
 import subprocess
 import tarfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -921,6 +922,7 @@ class RemoteAgentClient:
         delivery: "InboundDelivery | None" = None,
         max_iterations: int | None = None,
         task_supplier: "callable | None" = None,
+        stop_event: threading.Event | None = None,
     ) -> str:
         """Combined heartbeat + state-poll + inbound-delivery loop.
 
@@ -946,10 +948,14 @@ class RemoteAgentClient:
             task_supplier: Optional zero-arg callable returning a dict
                 ``{"current_task": str, "active_tasks": int}`` reported on
                 each heartbeat (same contract as :py:meth:`run_heartbeat_loop`).
+            stop_event: Optional :py:class:`threading.Event` that, when set,
+                causes the loop to exit cleanly with return value ``"stopped"``.
+                Call ``stop_event.set()`` from a SIGTERM handler to achieve
+                graceful shutdown. Ignored when ``None``.
 
         Returns:
-            The terminal status: ``"paused"``, ``"removed"``, or
-            ``"max_iterations"``.
+            The terminal status: ``"paused"``, ``"removed"``,
+            ``"max_iterations"``, or ``"stopped"``.
 
         Errors from the activity poll, heartbeat, or state poll are
         logged and the loop continues — a transient platform hiccup
@@ -964,6 +970,8 @@ class RemoteAgentClient:
         i = 0
         try:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return "stopped"
                 if max_iterations is not None and i >= max_iterations:
                     return "max_iterations"
                 i += 1
@@ -1224,10 +1232,11 @@ class RemoteAgentClient:
         self,
         max_iterations: int | None = None,
         task_supplier: "callable | None" = None,
+        stop_event: threading.Event | None = None,
     ) -> str:
         """Drive heartbeat + state-poll on a timer. Returns the terminal
-        status when the loop exits (``"paused"``, ``"removed"``, or
-        ``"max_iterations"``).
+        status when the loop exits (``"paused"``, ``"removed"``,
+        ``"max_iterations"``, or ``"stopped"``).
 
         Args:
             max_iterations: Stop after N loop iterations. None = run until
@@ -1236,6 +1245,10 @@ class RemoteAgentClient:
             task_supplier: Optional zero-arg callable returning a dict
                 ``{"current_task": str, "active_tasks": int}`` fetched
                 each iteration. Lets the agent report what it's doing.
+            stop_event: Optional :py:class:`threading.Event` that, when set,
+                causes the loop to exit cleanly with return value ``"stopped"``.
+                Call ``stop_event.set()`` from a SIGTERM handler to achieve
+                graceful shutdown. Ignored when ``None``.
 
         The loop sends one heartbeat + one state poll per iteration; the
         next iteration sleeps for ``heartbeat_interval`` seconds. Errors
@@ -1245,6 +1258,8 @@ class RemoteAgentClient:
         """
         i = 0
         while True:
+            if stop_event is not None and stop_event.is_set():
+                return "stopped"
             if max_iterations is not None and i >= max_iterations:
                 return "max_iterations"
             i += 1
