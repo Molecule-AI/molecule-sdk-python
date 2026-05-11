@@ -253,3 +253,47 @@ def _is_hex(value: str) -> bool:
 `tests/conftest.py` exists with the `_CaptureHandler` stub definition.
 `pytest tests/test_call_peer_errors.py` runs all 12 tests cleanly.
 `pytest tests/` collects all test files with no collection errors.
+
+---
+
+## KI-009 — `run_heartbeat_loop()` does not honour external stop signals
+
+**File:** `molecule_agent/client.py` (`RemoteAgentClient.run_heartbeat_loop`)
+**Status:** Identified
+**Severity:** Low
+
+### Symptom
+`run_heartbeat_loop()` runs an unbounded `while True` loop with `sleep(heartbeat_interval)`
+between iterations. There is no mechanism for an external caller to signal the loop
+to exit cleanly. If the MCP client that launched the remote agent disconnects (e.g. via
+SSE stream close), the heartbeat loop continues indefinitely until `max_iterations` is
+reached or the process is killed externally.
+
+### Impact
+Orphaned heartbeat processes continue consuming platform API quota after the controlling
+MCP client has disconnected. Each iteration sends a `POST /registry/heartbeat` and a
+`GET /workspaces/:id/state` call. Over time this accumulates unnecessary API calls.
+
+### Suggested fix
+Add a `stop_event` parameter to `run_heartbeat_loop()` — a `threading.Event` or
+`asyncio.Event` that, when set, causes the loop to exit cleanly with a `stopped`
+return value:
+
+```python
+def run_heartbeat_loop(
+    self,
+    max_iterations: int | None = None,
+    task_supplier: "callable | None" = None,
+    stop_event: threading.Event | None = None,
+) -> str:
+    i = 0
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return "stopped"
+        if max_iterations is not None and i >= max_iterations:
+            return "max_iterations"
+        # ... rest of loop
+```
+
+Callers (MCP client wrappers, shell scripts) can then call `stop_event.set()` on
+SIGTERM/SIGINT to achieve clean shutdown.
