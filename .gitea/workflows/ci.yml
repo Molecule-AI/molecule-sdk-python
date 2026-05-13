@@ -27,3 +27,17 @@ jobs:
 
       - name: Lint
         run: pip install ruff && ruff check molecule_agent/ molecule_plugin/
+
+  all-required:
+    name: all-required
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check test result
+        run: |
+          result="${{ needs.test.result }}"
+          if [ "$result" != "success" ]; then
+            echo "Required job test failed (result: $result)"
+            exit 1
+          fi
+          echo "All required jobs passed"
