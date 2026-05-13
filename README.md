@@ -1,23 +1,136 @@
-# molecule_plugin — Python SDK for building Molecule AI plugins
+# molecule-ai-sdk — Python SDK for Molecule AI
 
-A Molecule AI plugin is a directory that bundles rules, skills, and per-runtime
-install adaptors. Any plugin that conforms to this contract is installable
-on any Molecule AI workspace whose runtime the plugin supports.
+Two packages, one install:
 
-## Quick start
+| Package | Purpose |
+|---------|---------|
+| `molecule_agent` | **Remote-agent client.** Run an agent outside the platform's Docker network — it registers, pulls secrets, heartbeats, and participates in A2A delegation. |
+| `molecule_plugin` | **Plugin-authoring SDK.** Bundle rules, skills, and per-runtime adaptors for any Molecule AI workspace. |
 
-Copy `template/` to a new directory and edit:
+Published on PyPI as [`molecule-ai-sdk`](https://pypi.org/project/molecule-ai-sdk/).
 
+```bash
+pip install molecule-ai-sdk
 ```
-my-plugin/
-├── plugin.yaml              # name, version, runtimes, description
-├── rules/my-rule.md         # optional — appended to CLAUDE.md at install
-├── skills/my-skill/
-│   ├── SKILL.md             # instructions injected into the system prompt
-│   └── tools/do_thing.py    # optional LangChain @tool functions
-└── adapters/
-    ├── claude_code.py       # one-liner: `from molecule_plugin import AgentskillsAdaptor as Adaptor`
-    └── deepagents.py        # same
+
+---
+
+## molecule_agent — Remote-Agent Client
+
+Write an agent that runs on a laptop, VM, or any machine outside the platform's Docker network. The SDK handles registration, authentication, heartbeat, and A2A communication via the Phase 30 HTTP contract.
+
+### Quick Start
+
+```python
+from molecule_agent import RemoteAgentClient
+
+client = RemoteAgentClient(
+    workspace_id="550e8400-e29b-41d4-a716-446655440000",
+    platform_url="https://your-platform.example.com",
+    agent_card={"name": "my-remote-agent", "skills": []},
+)
+client.register()            # mints and persists the auth token
+secrets = client.pull_secrets()  # returns {"OPENAI_API_KEY": "sk-..."}
+client.run_heartbeat_loop()  # background heartbeat + state-poll; detects pause/delete
+```
+
+### One-liner bootstrap (poll mode)
+
+```bash
+pip install molecule-ai-sdk
+WORKSPACE_ID=... PLATFORM_URL=... AGENT_TOKEN=... \
+  python -m molecule_agent connect --handler my_module:handle_message
+```
+
+Picks `PollDelivery` automatically when no public URL is available — works behind NAT with no inbound firewall holes. `SIGTERM`/`SIGINT` shut the loop down cleanly.
+
+### A2A Delegation
+
+```python
+from molecule_agent import RemoteAgentClient
+
+client = RemoteAgentClient(workspace_id="...", platform_url="...")
+
+# Sync: wait for the peer's response
+response = client.delegate(peer_workspace_id, "Summarise the Q1 report")
+
+# Async: get a task_id, poll for result
+task_id = client.delegate(peer_workspace_id, "Audit the homepage", async_delegate=True)
+result = client.check_delegation_status(task_id)
+```
+
+### Inbound Messages (Two delivery paths)
+
+**Poll mode** (default, no public URL needed):
+
+```python
+from molecule_agent import RemoteAgentClient, PollDelivery
+
+client = RemoteAgentClient(workspace_id="...", platform_url="...")
+client.register()
+
+def handle(msg):
+    reply = f"Got: {msg.text}"
+    client.reply(msg, reply)   # routes to /notify (canvas user) or /a2a (peer)
+
+client.run_agent_loop(handler=handle)  # uses PollDelivery internally
+```
+
+**Push mode** (requires a public URL, lower latency):
+
+```python
+from molecule_agent import RemoteAgentClient, PushDelivery, A2AServer
+
+server = A2AServer(agent_id="...", inbound_url="https://your-agent.example.com/a2a/inbound")
+server.start_in_background()
+
+client = RemoteAgentClient(workspace_id="...", platform_url="...")
+client.reported_url = server.inbound_url  # register with public URL
+client.register()
+client.run_agent_loop(handler=handle, delivery=PushDelivery(client, server))
+```
+
+### Plugin Install
+
+Agents can install plugins from the platform registry at runtime:
+
+```python
+client.install_plugin(source="local://my-plugin")
+# or from a tarball
+client.install_plugin_from_tarball("/path/to/plugin.tar.gz", expected_sha256="...")
+```
+
+### All public exports
+
+```python
+from molecule_agent import (
+    RemoteAgentClient,   # Main entry point
+    A2AServer,           # Push-mode inbound HTTP server
+    PollDelivery,        # Default poll-mode delivery
+    PushDelivery,        # Push-mode delivery (needs public URL)
+    InboundMessage,      # Inbound message object
+    MessageHandler,      # Handler callable signature
+    WorkspaceState,      # Pause / running / deleted
+    PeerInfo,            # Peer workspace metadata
+    compute_plugin_sha256,
+    verify_plugin_sha256,
+)
+```
+
+See `examples/remote-agent/run.py` for a full runnable demo.
+
+---
+
+## molecule_plugin — Plugin Authoring SDK
+
+A Molecule AI plugin is a directory that bundles rules, skills, and per-runtime install adaptors. Any plugin that conforms to this contract is installable on any Molecule AI workspace whose runtime supports it.
+
+### Quick Start
+
+```bash
+# Clone the template
+cp -r template/ my-plugin/
+# Edit my-plugin/plugin.yaml, rules/, skills/, adapters/
 ```
 
 Validate:
@@ -28,49 +141,26 @@ errors = validate_manifest("my-plugin/plugin.yaml")
 assert not errors, errors
 ```
 
-## CLI
-
-The SDK ships a CLI for validating Molecule AI artifacts before publishing:
+### CLI
 
 ```bash
-python -m molecule_plugin validate plugin    my-plugin/
-python -m molecule_plugin validate workspace workspace-configs-templates/claude-code-default/
-python -m molecule_plugin validate org       org-templates/molecule-dev/
-python -m molecule_plugin validate channel   channels.yaml
-python -m molecule_plugin validate my-plugin/   # kind defaults to 'plugin'
+python -m molecule_plugin validate plugin     my-plugin/
+python -m molecule_plugin validate workspace    workspace-configs-templates/claude-code-default/
+python -m molecule_plugin validate org          org-templates/molecule-dev/
+python -m molecule_plugin validate channel     channels.yaml
 ```
 
-Exit code is 0 when valid, 1 when any errors are found — suitable for CI.
-Add `-q` / `--quiet` to suppress success lines and emit only errors.
+Exit code 0 when valid, 1 when errors found — suitable for CI. Add `-q` / `--quiet` to suppress success lines.
 
-Programmatic equivalents:
+### Writing a Custom Adaptor
 
-```python
-from molecule_plugin import (
-    validate_plugin,
-    validate_workspace_template,
-    validate_org_template,
-    validate_channel_file,
-    validate_channel_config,
-)
-```
+The default `AgentskillsAdaptor` handles rules + skills. Write a custom adaptor when you need to:
 
-## Per-runtime adaptors — when to write a custom one
-
-The default `AgentskillsAdaptor` handles the common shape: rules go into
-the runtime's memory file (CLAUDE.md), skill dirs go into `/configs/skills/`.
-That covers most plugins.
-
-Write a custom adaptor when you need to:
-
-- **Register runtime tools dynamically** — call `ctx.register_tool(name, fn)`.
-- **Register DeepAgents sub-agents** — call `ctx.register_subagent(name, spec)`.
-- **Write to a non-standard memory file** — call `ctx.append_to_memory(filename, content)`.
-
-Minimum custom adaptor:
+- Register runtime tools dynamically — `ctx.register_tool(name, fn)`
+- Register DeepAgents sub-agents — `ctx.register_subagent(name, spec)`
+- Write to a non-standard memory file — `ctx.append_to_memory(filename, content)`
 
 ```python
-# adapters/deepagents.py
 from molecule_plugin import InstallContext, InstallResult
 
 class Adaptor:
@@ -85,23 +175,15 @@ class Adaptor:
         pass
 ```
 
-## Resolution order (understood by the platform)
+### Resolution order
 
 For `(plugin_name, runtime)`:
 
-1. **Platform registry** — `workspace-template/plugins_registry/<plugin>/<runtime>.py`
-   (curated; set by the Molecule AI team for quality-assured plugins).
-2. **Plugin-shipped** — `<plugin_root>/adapters/<runtime>.py` (what this SDK helps you build).
-3. **Raw-drop fallback** — copies plugin files into `/configs/plugins/<name>/`
-   and surfaces a warning; no tools are wired.
+1. **Platform registry** — curated, set by the Molecule AI team
+2. **Plugin-shipped** — `<plugin_root>/adapters/<runtime>.py` (what this SDK helps you build)
+3. **Raw-drop fallback** — copies files, no tools wired
 
-You generally ship for path #2. If your plugin becomes popular enough to be
-promoted to "default," the Molecule AI team PRs a copy of your adaptor into
-the platform registry (path #1) so it survives upstream breakage.
-
-## Testing locally
-
-The SDK ships `AgentskillsAdaptor` as a standalone, unit-testable class:
+### Testing locally
 
 ```python
 import asyncio
@@ -118,18 +200,24 @@ asyncio.run(AgentskillsAdaptor("my-plugin", "claude_code").install(ctx))
 # check /tmp/configs/CLAUDE.md, /tmp/configs/skills/
 ```
 
-## Publishing
+### Supported runtimes
 
-A plugin is just a directory. Push it to any Git host. Installation via
-`POST /plugins/install {git_url}` is on the roadmap — see the platform's
-`PLAN.md` under "Install-from-GitHub-URL flow." Until then, plugins are
-bundled into the platform by dropping them into `plugins/` at deploy time.
-
-## Supported runtimes
-
-As of 2026-Q2: `claude_code`, `deepagents`, `langgraph`, `crewai`, `autogen`,
-`openclaw`. See the live list with:
+`claude_code`, `deepagents`, `langgraph`, `crewai`, `autogen`, `openclaw`. See the live list:
 
 ```bash
-curl $PLATFORM_URL/plugins
+curl "$PLATFORM_URL/plugins"
 ```
+
+---
+
+## Both packages
+
+- **Python:** `>=3.11`, no external async dependencies in `molecule_agent`
+  (uses blocking `requests` so it embeds in any event loop).
+- **Error handling:** Network errors in loops are logged and swallowed so a
+  transient platform hiccup does not take a remote agent offline. API-level
+  errors (4xx) propagate via `raise_for_status()`.
+- **Token security:** Auth token cached at `~/.molecule/<workspace_id>/.auth_token`
+  with `0600` permissions.
+- **Full documentation:** See `CLAUDE.md` for architecture, platform API
+  endpoints, SDK conventions, and known issues.
