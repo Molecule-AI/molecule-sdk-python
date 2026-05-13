@@ -233,4 +233,4 @@ python -m molecule_agent verify-sha256 ./my-plugin-dir
   triage.
 - **CLAUDE.md/PLAN.md sync PRs:** treat these as always noteworthy.
 - **molecule-core docs:** Full platform `PLAN.md` and architecture docs at
-  `https://github.com/hongmingw/molecule-monorepo`
+  `https://git.moleculesai.app/molecule-ai/molecule-core`
