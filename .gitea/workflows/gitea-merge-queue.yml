@@ -1,18 +1,39 @@
-name: Merge Queue
+name: gitea-merge-queue
+
+# External serialized merge queue for Gitea 1.22.6.
+# Uses AUTO_SYNC_TOKEN (devops-engineer persona PAT) as merge actor.
 
 on:
-  pull_request:
-    types: [labeled]
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitea-merge-queue-${{ github.repository }}
+  cancel-in-progress: false
 
 jobs:
-  merge:
-    if: contains(github.event.pull_request.labels.*.name, 'merge-queue')
+  queue:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Merge PR
-        run: |
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/merge" \
-            -d '{"do":"merge","merge_when_checks_succeed":true}'
+      - name: Check out queue script from main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Process one queued PR
+        env:
+          GITEA_TOKEN: ${{ secrets.AUTO_SYNC_TOKEN }}
+          GITEA_HOST: git.moleculesai.app
+          REPO: ${{ github.repository }}
+          WATCH_BRANCH: ${{ github.event.repository.default_branch }}
+          QUEUE_LABEL: merge-queue
+          HOLD_LABEL: merge-queue-hold
+          UPDATE_STYLE: merge
+          REQUIRED_CONTEXTS: >-
+            CI / test (pull_request)
+        run: python3 .gitea/scripts/gitea-merge-queue.py
