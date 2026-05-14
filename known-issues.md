@@ -291,3 +291,61 @@ Tests added: `test_run_loop_exits_on_stop_event`,
 `test_run_loop_respects_stop_event_between_iterations` in
 `tests/test_remote_agent.py`; `test_run_agent_loop_exits_on_stop_event`
 in `tests/test_inbound.py`.
+
+---
+
+## KI-010 — `[Do]: Required` blocks all merges in molecule-ai org
+
+**Status:** Active blocker — org-level branch protection, requires human admin action  
+**Severity:** Critical  
+**Affects:** All repos in `molecule-ai` org
+
+### Symptom
+Every `POST /repos/{owner}/{repo}/pulls/{n}/merge` attempt returns:
+```
+HTTP 422 — [Do]: Required
+```
+Repo-level branch protection API shows `user_can_merge: False` and `required_approvals: 1` (already satisfied by plugin-dev). All CI checks are green. The `[Do]` entity is **not** a Gitea user, **not** a team, **not** a CODEOWNERS file — it is invisible via all API endpoints.
+
+### Root cause
+Org-level branch protection rule in Gitea admin panel (not visible via `/api/v1/repos/{org}/{repo}/branches/{branch}/protection`). Requires a specific named identity `[Do]` that no API token can satisfy. `devops-engineer` (AUTO_SYNC_TOKEN) bypasses this on `molecule-core` only — the rule is not applied to that repo, or the token is whitelisted there.
+
+### Impact
+- 17 PRs blocked on SDK/MCP/CLI
+- 21+ PRs blocked across plugin repos
+- Merge queue automation cannot activate without admin web merge
+- `AUTO_SYNC_TOKEN` cannot merge without org-level whitelisting for SDK/MCP/CLI/plugin repos
+
+### Resolution path
+1. **Immediate**: Admin web-merges the 3 workflow PRs (SDK #17, MCP #13, CLI #11) → queue activates → content PRs auto-merge
+2. **Short-term**: Add `AUTO_SYNC_TOKEN` as a bypass actor in branch protection for SDK/MCP/CLI repos, OR relax org-level rule to repo level
+3. **Plugin repos**: Same pattern — merge queue PRs created for all 21 repos (see below), admin web merge needed
+
+### Plugin repo merge queue PRs (created 2026-05-14)
+All 21 `molecule-ai/molecule-ai-plugin-*` repos have new PRs adding `gitea-merge-queue.yml` + `gitea-merge-queue.py` (sourced from core #860). PR numbers by repo:
+
+| Repo | PR# |
+|------|-----|
+| molecule-ai-plugin-browser-automation | #7 |
+| molecule-ai-plugin-ecc | #10 |
+| molecule-ai-plugin-gh-identity | #10 |
+| molecule-ai-plugin-molecule-audit | #12 |
+| molecule-ai-plugin-molecule-audit-trail | #8 |
+| molecule-ai-plugin-molecule-careful-bash | #11 |
+| molecule-ai-plugin-molecule-compliance | #12 |
+| molecule-ai-plugin-molecule-dev | #9 |
+| molecule-ai-plugin-molecule-freeze-scope | #11 |
+| molecule-ai-plugin-molecule-hitl | #12 |
+| molecule-ai-plugin-molecule-prompt-watchdog | #11 |
+| molecule-ai-plugin-molecule-security-scan | #12 |
+| molecule-ai-plugin-molecule-session-context | #8 |
+| molecule-ai-plugin-molecule-skill-code-review | #8 |
+| molecule-ai-plugin-molecule-skill-cron-learnings | #8 |
+| molecule-ai-plugin-molecule-skill-cross-vendor-review | #8 |
+| molecule-ai-plugin-molecule-skill-llm-judge | #8 |
+| molecule-ai-plugin-molecule-skill-update-docs | #8 |
+| molecule-ai-plugin-molecule-workflow-retro | #8 |
+| molecule-ai-plugin-molecule-workflow-triage | #9 |
+| molecule-ai-plugin-superpowers | #9 |
+
+All labeled `merge-queue` and approved by sdk-lead. Need admin web merge.
