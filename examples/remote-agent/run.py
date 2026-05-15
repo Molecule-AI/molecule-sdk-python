@@ -41,12 +41,12 @@ import os
 import sys
 
 # Local-dev import path — when installed via pip the molecule_agent package
-# resolves normally; when running from the repo checkout we add sdk/python/
+# resolves normally; when running from the repo checkout we add the repo root
 # to sys.path so you can run `python3 run.py` without a pip install.
 _here = os.path.dirname(os.path.abspath(__file__))
-_sdk = os.path.join(_here, "..", "..", "sdk", "python")
-if os.path.isdir(_sdk) and _sdk not in sys.path:
-    sys.path.insert(0, _sdk)
+_repo_root = os.path.normpath(os.path.join(_here, "..", ".."))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from molecule_agent import RemoteAgentClient  # noqa: E402
 
