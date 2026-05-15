@@ -26,7 +26,7 @@ Example: a minimal plugin that's installable on Claude Code and DeepAgents
         ├── claude_code.py   # `from molecule_plugin import AgentskillsAdaptor as Adaptor`
         └── deepagents.py    # same one-liner
 
-Full docs + cookiecutter template: see ``sdk/python/README.md``.
+Full docs + cookiecutter template: see the repo root ``README.md``.
 """
 
 from __future__ import annotations
