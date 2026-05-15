@@ -11,10 +11,19 @@ a Phase 30 endpoint:
 * :py:meth:`run_heartbeat_loop` — drives heartbeat + state-poll on a timer,
   returns when the platform reports the workspace paused or deleted.
 
-No inbound A2A server is bundled here yet — that requires hosting an HTTP
-endpoint the platform's proxy can reach, which is network-dependent.
-Use :class:`molecule_agent.a2a_server.A2AServer` to add inbound A2A support.
-See that module for usage and the Phase 30.8b contract.
+The client also exposes two inbound delivery paths for handling platform-initiated
+A2A messages:
+
+* **Push mode** — :class:`molecule_agent.a2a_server.A2AServer` hosts an HTTP server
+  in a background thread; platform pushes inbound A2A as HTTP requests. Use when the
+  agent has a publicly reachable URL (cloud VM, ngrok tunnel, etc.).
+* **Poll mode** — :class:`molecule_agent.inbound.PollDelivery` polls
+  ``GET /workspaces/:id/activity`` on a configurable interval; no public URL required.
+  The default when no explicit delivery is passed to :py:meth:`run_agent_loop`.
+
+Both feed the same :py:class:`molecule_agent.inbound.MessageHandler` callback.
+Reply routing (``/notify`` for canvas users, ``/a2a`` for peer agents) is handled
+automatically by :py:meth:`reply`.
 """
 from __future__ import annotations
 
