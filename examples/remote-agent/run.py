@@ -8,9 +8,11 @@ What this does:
 3. Runs a heartbeat + state-poll loop; exits cleanly when the platform
    reports the workspace paused or deleted.
 
-What it doesn't do (future 30.8b work):
-- Host an inbound A2A server. Platform-initiated calls to this agent
-  won't reach it unless you expose one yourself.
+What it doesn't do (see run_agent_loop for the full version):
+- Host an inbound A2A server. Use run_agent_loop(handler) instead of
+  run_heartbeat_loop() to also receive inbound A2A messages and reply
+  via the platform's /notify (canvas user) and /a2a (peer agent) endpoints.
+  The reply transport is auto-selected based on message source.
 
 Usage:
     # One-time setup on the platform side:
@@ -26,7 +28,7 @@ Usage:
         -d '{"key":"REMOTE_DEMO_KEY","value":"hello-from-remote"}'
 
     # Now run this script from any machine that can reach the platform:
-    WORKSPACE_ID=<id> PLATFORM_URL=http://localhost:8080 python3 run.py
+    WORKSPACE_ID=<id> PLATFORM_URL=http://localhost:8080 python3 examples/remote-agent/run.py
 
 Environment variables:
     WORKSPACE_ID    (required)
@@ -41,12 +43,14 @@ import os
 import sys
 
 # Local-dev import path — when installed via pip the molecule_agent package
-# resolves normally; when running from the repo checkout we add sdk/python/
-# to sys.path so you can run `python3 run.py` without a pip install.
+# resolves normally; when running from the repo checkout we add the repo root
+# to sys.path so you can run `python3 examples/remote-agent/run.py` without
+# a pip install.
 _here = os.path.dirname(os.path.abspath(__file__))
-_sdk = os.path.join(_here, "..", "..", "sdk", "python")
-if os.path.isdir(_sdk) and _sdk not in sys.path:
-    sys.path.insert(0, _sdk)
+_repo_root = os.path.normpath(os.path.join(_here, "..", ".."))
+_molecule_agent = os.path.join(_repo_root, "molecule_agent")
+if os.path.isdir(_molecule_agent) and _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 from molecule_agent import RemoteAgentClient  # noqa: E402
 
