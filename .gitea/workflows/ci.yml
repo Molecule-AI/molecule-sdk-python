@@ -1,4 +1,4 @@
-name: Test
+name: CI
 
 on:
   push:
@@ -27,3 +27,24 @@ jobs:
 
       - name: Lint
         run: pip install ruff && ruff check molecule_agent/ molecule_plugin/
+
+  all-required:
+    name: all-required
+    needs: [test]
+    # required: all matrix variants must succeed
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all required jobs passed
+        run: |
+          # Collect results from all test matrix variants
+          results="${{ needs.test.result }}"
+          echo "Matrix results: $results"
+          # Any result that is not "success" is a failure condition
+          if [[ "$results" == *"failure"* ]] || \
+             [[ "$results" == *"cancelled"* ]] || \
+             [[ "$results" == *"skipped"* ]]; then
+            echo "One or more required jobs did not succeed: $results"
+            exit 1
+          fi
+          echo "All required jobs passed."
