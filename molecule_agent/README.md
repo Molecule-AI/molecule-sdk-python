@@ -54,8 +54,11 @@ secrets = client.pull_secrets()
 client.install_plugin("molecule-dev")
 client.install_plugin("my-plugin", source="github://acme/my-plugin")
 
-# 4. Run the heartbeat + state-poll loop until the platform pauses/deletes us.
-terminal = client.run_heartbeat_loop()
+# 4. Run the heartbeat + state-poll loop until the platform pauses/deletes us
+#    or until stop_event.set() is called from another thread.
+import threading
+stop = threading.Event()
+terminal = client.run_heartbeat_loop(stop_event=stop)
 print(f"loop exited: {terminal}")
 ```
 
@@ -75,8 +78,8 @@ A runnable demo with full setup walkthrough lives at
 | `call_peer(target, message)` | 30.6 | Direct A2A with proxy fallback; response may be wrapped in OFFSEC-003 boundary markers — use ``strip_a2a_boundary()`` to remove them |
 | `fetch_inbound(since_id=…)` | 30.8c | One-shot poll of `/workspaces/:id/activity` for inbound A2A |
 | `reply(msg, text)` | 30.8c | Smart-routes reply to `/notify` (canvas user) or `/a2a` (peer) |
-| `run_heartbeat_loop()` | combo | Drives heartbeat + state-poll on a timer; exits on pause/delete |
-| `run_agent_loop(handler)` | combo | Heartbeat + state + **inbound dispatch**; exits on pause/delete |
+| `run_heartbeat_loop(stop_event=None)` | combo | Drives heartbeat + state-poll on a timer; exits on pause/delete or when `stop_event.set()` is called from another thread (KI-009) |
+| `run_agent_loop(handler, stop_event=None)` | combo | Heartbeat + state + **inbound dispatch**; exits on pause/delete or when `stop_event.set()` is called from another thread (KI-009) |
 
 ## Inbound delivery — push vs poll
 

@@ -9,6 +9,7 @@ and detect pause/resume/delete — all via the Phase 30.1–30.5 HTTP contract.
 
 Intended usage::
 
+    import threading
     from molecule_agent import RemoteAgentClient
 
     client = RemoteAgentClient(
@@ -18,7 +19,8 @@ Intended usage::
     )
     client.register()                # mints + persists the auth token
     env = client.pull_secrets()      # decrypted secrets dict
-    client.run_heartbeat_loop()      # background heartbeat + state-poll
+    stop = threading.Event()
+    client.run_heartbeat_loop(stop_event=stop)  # background heartbeat; stop.set() to exit cleanly
 
 See ``sdk/python/examples/remote-agent/`` for a runnable demo.
 

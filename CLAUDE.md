@@ -219,6 +219,21 @@ python -m molecule_agent verify-sha256 ./my-plugin-dir
   shut the loop down cleanly. Cursor optionally persisted to `--cursor-file` so
   restarts resume from the last-seen activity row.
 
+- **`run_heartbeat_loop(stop_event)` and `run_agent_loop(stop_event)`** (KI-009):
+  Both loops accept an optional `threading.Event` parameter. When the event is set
+  from another thread, the loop exits immediately with return value `"stopped"`.
+  The check runs before `max_iterations` so a signal always wins. Useful for
+  embedding the client in a long-running process that needs a clean shutdown path:
+  ```python
+  import threading, time
+  from molecule_agent import RemoteAgentClient
+  stop = threading.Event()
+  client = RemoteAgentClient(...)
+  # Signal-safe: call stop.set() from any thread to stop the loop
+  terminal = client.run_heartbeat_loop(stop_event=stop)
+  # terminal == "stopped" if stop.set() was called, else "paused"/"deleted"
+  ```
+
 ---
 
 ## Relevant platform docs
